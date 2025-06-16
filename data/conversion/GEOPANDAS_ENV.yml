@@ -1,0 +1,13 @@
+name: GEOPANDAS_ENV     
+channels:
+  - conda-forge           
+  - defaults
+
+dependencies:
+  - python=3.12          
+  - numpy            
+  - pandas                 
+  - matplotlib
+  - geopandas
+  - jupyter
+  - ipykernel
