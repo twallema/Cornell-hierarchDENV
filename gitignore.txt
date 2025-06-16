@@ -166,7 +166,7 @@ dmypy.json
 *.app
 
 ## Macbook
-*.DS_Store
+.DS_Store
 
 ## R studio
-*.Rhistory
+.Rhistory
