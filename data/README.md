@@ -18,7 +18,7 @@ Downloaded using the instructions under '2 - Using FTPWeb' on https://sprint.mos
 
 ### DENV datasus
 
-These data are partly confidential. 
+These data are partly confidential and can be found on the Bento lab box.
 
 ## Interim
 
@@ -41,3 +41,7 @@ These data are partly confidential.
 + `build_distance-matrix_covariates.ipynb`: Notebook used to build a demographically-weighted distance matrix between Brazilian states `weighted_distance_matrix.csv`, as well as a dataset of Brazilian state-level covariates relevant to DENV transmission in `state_covariates.csv`. Recommend working in the environment `GEOPANDAS_ENV.yml`.
 
 + `DENV_datasus_conversion.py`: Script used to convert the (partly confidential) raw linelisted datasus DENV data into a more pleasant interim format.
+
+### Modeling serotypes
+
++ `fit-model.py`: pyMC model to impute the DENV datasus serotype data (`DENV-serotypes_1996-2025_monthly/weekly.csv`).

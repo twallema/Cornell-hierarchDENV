@@ -38,7 +38,7 @@ Q += 1e-6 * np.eye(Q.shape[0])  # Numerical stabilization
 # ~~~~~~~~~~
 
 # Fetch covariates
-X = pd.read_csv('../../state_covariates.csv', index_col=0)
+X = pd.read_csv('../../interim/state_covariates.csv', index_col=0)
 # Normalise all covariates
 # Standardization ensures a change of 1 unit in X_j corresponds to a 1 SD change — makes priors and posteriors comparable across covariates.
 # X: shape (n_states, n_covariates)
