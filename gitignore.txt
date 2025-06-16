@@ -135,3 +135,4 @@ dmypy.json
 .Rhistory
 
 # Datasets that are too large
+data/raw/sprint_2025/climate.csv
