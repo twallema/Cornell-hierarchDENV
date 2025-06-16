@@ -1,0 +1,12 @@
+name: HIERARCHDENV
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pymc
+  - arviz
+  - numpy
+  - jupyter
+  - ipykernel
+  - pandas
+  - matplotlib
