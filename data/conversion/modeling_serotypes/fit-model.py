@@ -192,9 +192,9 @@ with pm.Model() as dengue_model:
     # Try to combine an AR(p) with a CAR prior on every timestep in the past
     # priors for zetas and a per serotype per lag
     p = 1
-    rw_shrinkage = pm.HalfNormal("rw_shrinkage", sigma=0.001)
+    rw_shrinkage = pm.HalfNormal("rw_shrinkage", sigma=0.1)
     alpha_t_sigma = pm.HalfNormal("alpha_t_sigma", sigma=rw_shrinkage, shape=n_serotypes)
-    zeta_car = pm.HalfNormal("zeta_car", 100, shape=(n_serotypes, p))
+    zeta_car = pm.HalfNormal("zeta_car", 300, shape=(n_serotypes, p))
     a_car = pm.Beta("a_car", 2, 2, shape=(n_serotypes, p))
     rho = pm.Beta("rho", 2, 2, shape=(n_serotypes, p))
     D_shared = pm.MutableData("D_shared", D_matrix)
@@ -300,7 +300,7 @@ with pm.Model() as dengue_model:
 
 # NUTS
 with dengue_model:
-    trace = pm.sample(200, tune=100, target_accept=0.95, chains=4, cores=4, init='auto', progressbar=True)
+    trace = pm.sample(20, tune=30, target_accept=0.99, chains=4, cores=4, init='auto', progressbar=True)
 
 # Plot posterior predictive checks
 with dengue_model:
