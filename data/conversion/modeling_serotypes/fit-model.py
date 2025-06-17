@@ -189,26 +189,12 @@ with pm.Model() as dengue_model:
     # p_{i,s,t} ~ Dirichlet(\theta_{i,s,t})
     # log 𝜃_{i,s,t} = 𝛼 + 𝛼_s + 𝛼_t + 𝛼_i + 𝛼_{i,t} + 𝛼_{s,i}    
 
-    # Global intercept
-    # Changes \theta_{i,s,t} identically for every subtype --> Changes overall uncertainty
-    alpha = pm.Normal("alpha", mu=0.0, sigma=10.0)
-
-    # α_s: state-specific random effect
-    # Make uncertainty on subtype proportions state-dependent
-    alpha_s_sigma = pm.HalfNormal("alpha_s_sigma", sigma=1.0)
-    alpha_s = pm.Normal("alpha_s", mu=0.0, sigma=alpha_s_sigma, shape=n_states)
-
-    # α_i: serotype-specific baseline
-    # Model the time-independent Brasil-average subtype composition
-    alpha_i_sigma = pm.HalfNormal("alpha_i_sigma", sigma=1.0)
-    alpha_i = pm.Normal("alpha_i", mu=0.0, sigma=alpha_i_sigma, shape=n_serotypes)
-
     # Try to combine an AR(p) with a CAR prior on every timestep in the past
     # priors for zetas and a per serotype per lag
     p = 1
-    rw_shrinkage = pm.HalfNormal("rw_shrinkage", sigma=0.1)
+    rw_shrinkage = pm.HalfNormal("rw_shrinkage", sigma=0.001)
     alpha_t_sigma = pm.HalfNormal("alpha_t_sigma", sigma=rw_shrinkage, shape=n_serotypes)
-    zeta_car = pm.Exponential("zeta_car", lam=1/300, shape=(n_serotypes, p))
+    zeta_car = pm.HalfNormal("zeta_car", 100, shape=(n_serotypes, p))
     a_car = pm.Beta("a_car", 2, 2, shape=(n_serotypes, p))
     rho = pm.Beta("rho", 2, 2, shape=(n_serotypes, p))
     D_shared = pm.MutableData("D_shared", D_matrix)
@@ -221,37 +207,30 @@ with pm.Model() as dengue_model:
     zeta_expanded = zeta_car[:,:,None, None]
     # kernel = exp(-D_shared / zeta)
     W = pt.exp(-D_expanded / zeta_expanded)
-    # Zero diagonal
-    eye = pt.eye(n_states)  # Identity matrix of shape (27, 27)
-    eye = eye[None, None, :, :]
-    W = W * (1 - eye)
-    # Degree matrix
-    degree = pt.sum(W, axis=-1)
-    I = pt.eye(n_states)[None, None, :, :]  # broadcastable identity matrix
-    degree_expanded = degree[:, :, :, None]  # add extra dim for broadcasting
-    D = I * degree_expanded
+    # Construct degree tensor (matrix equivalent: row sums of weighted distance matrix on diagonal of eye(n_states))
+    degree = pt.sum(W, axis=-1)[:, :, :, None]
+    I = pt.eye(n_states)[None, None, :, :]
+    D = I * degree
     # Q = D - a * W + jitter
     jitter = 1e-6 * pt.diag(pt.ones(n_states))
     jitter = jitter[None, None, :, :]
     Q = D - a_car[:,:,None, None] * W + jitter
     # Q shape == (n_serotypes, p, n_states, n_states)
 
-    # Cholesky for Q
+    # Compute the Cholesky of Q
     chol = pt.slinalg.cholesky(Q)
-    # solve_triangular to invert
+    # solve_triangular to 
     L_inv = pytensor.tensor.slinalg.solve_triangular(chol, pt.eye(n_states), lower=True)  # (n_serotypes, p, n_states, n_states)
     # Transpose to upper bidiagonal
     L_inv_T = L_inv.transpose((0, 1, 3, 2))  # (n_serotypes, p, n_states, n_states)
-    # Now apply scaling by standard deviations
-    # alpha_t_sigma: (n_serotypes)
-    # We need to broadcast to match (n_serotypes, p, n_states, n_states)
+    # Now apply scaling by standard deviations and reconstruct chol
     alpha_scale = alpha_t_sigma[:,None,None,None]  # adding three dimensions
     chol = alpha_scale * L_inv_T
 
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-    chol_matrix_lag = chol.transpose((1, 0, 2, 3))
+    chol_matrix_lag = chol.transpose((1, 0, 2, 3)) # shape == (p, n_serotypes, n_states, n_states) --> makes more sense
 
-
+    # initialise initial condition
     alpha_init = pm.Normal("alpha_init", mu=0, sigma=1, shape=(p, n_serotypes, n_states))
 
     # --- FIX: epsilon now includes innovations for each lag at each timestep ---
@@ -302,7 +281,7 @@ with pm.Model() as dengue_model:
     theta_log_final_flat = theta_log_final.reshape((len(df), n_serotypes))
 
     # combine all terms
-    theta_log = alpha + alpha_s[state_idx][:, None] + alpha_i[None, :] + theta_log_final_flat
+    theta_log =  theta_log_final_flat
 
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
   
@@ -321,7 +300,7 @@ with pm.Model() as dengue_model:
 
 # NUTS
 with dengue_model:
-    trace = pm.sample(100, tune=100, target_accept=1-1e-12, chains=4, cores=4, init='auto', progressbar=True)
+    trace = pm.sample(200, tune=100, target_accept=0.95, chains=4, cores=4, init='auto', progressbar=True)
 
 # Plot posterior predictive checks
 with dengue_model:
@@ -336,7 +315,6 @@ arviz.to_netcdf(ppc, "ppc.nc")
 
 # Traceplot
 variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
-                  'alpha', 'alpha_s', 'alpha_s_sigma', 'alpha_i', 'alpha_i_sigma',
                   'rw_shrinkage', 'alpha_t_sigma', 'zeta_car', 'a_car', 'rho'
                 ]
 
