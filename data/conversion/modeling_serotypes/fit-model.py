@@ -275,7 +275,7 @@ with pm.Model() as dengue_model:
     # Final puzzle piece: allow the average serotype composition to change yearly by region
     # Model serotype-by-region-by-year back as a perturbation to serotype-by-year with shrinkage to control degree of overfitting
     # First: serotype by year (with its own shrinkage)
-    alpha_i_year_sigma = pm.HalfNormal("alpha_i_year_sigma", sigma=0.0005) # --> 0.001: Medium impact; Controls the degree of overfitting
+    alpha_i_year_sigma = pm.HalfNormal("alpha_i_year_sigma", sigma=0.001) # --> 0.001: Medium impact; Controls the degree of overfitting
     alpha_i_year = pm.Normal("alpha_i_year", mu=0.0, sigma=alpha_i_year_sigma, shape=(n_years, n_serotypes))
     # Then: serotype by region by year as deviation from its respective year
     eps_i_region_year_sigma = pm.Deterministic("eps_i_region_year_sigma", alpha_i_year_sigma/2)
@@ -324,7 +324,6 @@ arviz.to_netcdf(ppc, "ppc.nc")
 
 # Traceplot
 variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
-                  'rw_shrinkage', 'alpha_t_sigma', 'zeta_car', 'a_car', 'rho',
                   'alpha', 'alpha_s', 'alpha_i', 'alpha_i_sigma', 'alpha_it_sigma',
                   'zeta_car', 'a_car', 'sigma_car', 'alpha_i_year_sigma', 'alpha_i_year'
                 ]
