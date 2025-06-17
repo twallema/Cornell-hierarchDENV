@@ -166,36 +166,6 @@ with pm.Model() as dengue_model:
     # Final state-year effect
     beta_st = pm.Deterministic("beta_st", beta_rt[region_year_idx] + eps_st[state_year_idx])
 
-
-    # \beta_{s,t}: State-year-specific typing effort random effect
-    # sigma_st = pm.HalfNormal("sigma_st", sigma=2)
-    # beta_st = pm.Normal("beta_st", mu=0.0, sigma=sigma_st, shape=n_state_years)
-
-    # \beta_s (CAR prior)
-    # sigma_car = pm.HalfNormal("sigma_car", sigma=1)
-    # beta_s = pm.MvNormal("beta_s", mu=np.zeros(n_states), cov=sigma_car**2 * np.linalg.inv(Q), shape=n_states) #--> CAR prior
-
-    # \beta_t (random walk with drift) 
-    # Can be expanded to include piecewise-continuous drift or steps in surveillance efforts
-    # sigma_time = pm.HalfNormal("sigma_time", sigma=1)
-    # drift = pm.Normal("drift", mu=0.0, sigma=1)
-    # beta_t_raw = pm.GaussianRandomWalk("beta_t_raw", sigma=sigma_time, shape=n_months, init_dist=pm.Normal.dist(mu=0,sigma=1))
-    # drift_vector = drift * np.arange(n_months)
-    # beta_t = pm.Deterministic("beta_t", beta_t_raw + drift_vector)
-
-    # \sum_j \beta_j X_{s,j} (covariates)
-    # sigma_cov = pm.HalfNormal("sigma_cov", sigma=1.0, shape=n_covariates)
-    # beta_cov = pm.Normal("beta_cov", mu=0.0, sigma=sigma_cov, shape=n_covariates)
-    # covariates = pm.math.dot(X[state_idx], beta_cov)
-
-    # # logit(𝜇_{s,t})
-    # mu = pm.Deterministic("mu", pm.math.sigmoid(beta + beta_st))
-    # # 𝛿_{s,t} ~ 𝐵𝑒𝑡𝑎(𝜇_{s,t}.𝜙, (1 − 𝜇_{s,t}).𝜙)
-    # phi = pm.HalfNormal("phi", sigma=100.0)
-    # alpha_beta = mu * phi 
-    # beta_beta = (1 - mu) * phi 
-    # delta_st = pm.Beta("delta_st", alpha=alpha_beta, beta=beta_beta, observed=delta_obs)
-
     # Alternative: model serotyped fraction as a logit-normal since beta is close to zero
     logit_delta_obs = np.log(delta_obs / (1 - delta_obs)) 
     logit_mu = beta  + beta_st
@@ -210,6 +180,11 @@ with pm.Model() as dengue_model:
     # N^*_{s,t} ~ Binomial(N_{total,s,t}, \delta_{s,t})
     N_typed_latent = pm.Binomial("N_typed_latent", n=N_total, p=delta_st, observed=N_typed)
 
+    # N^*_{s,t} ~ Poisson(N_{total,s,t} * \delta_{s,t}) --> Less brutal likelihood than Binomial
+    # lambda_ = pm.Deterministic("lambda_", N_total * delta_st)
+    # N_typed_latent = pm.Poisson("N_typed_latent", mu=lambda_, observed=N_typed)
+
+
     # --- Subtype Composition Model ---
     # p_{i,s,t} ~ Dirichlet(\theta_{i,s,t})
     # log 𝜃_{i,s,t} = 𝛼 + 𝛼_s + 𝛼_t + 𝛼_i + 𝛼_{i,t} + 𝛼_{s,i}    
@@ -223,77 +198,114 @@ with pm.Model() as dengue_model:
     alpha_s_sigma = pm.HalfNormal("alpha_s_sigma", sigma=1.0)
     alpha_s = pm.Normal("alpha_s", mu=0.0, sigma=alpha_s_sigma, shape=n_states)
 
-    # α_t: global temporal RW(1)
-    # Make uncertainty on subtype proportions time-dependent --> shrinkage has little impact on speed of drifting
-    # Drift can grow or shrink uncertainty in the subtyping over time --> removed because no drift detected
-    # Took this term out while leaving α_{i,t} in and found out it's pretty much redundant
-    rw_shrinkage = pm.HalfNormal("rw_shrinkage", sigma=0.001) # Value: 0.0001 --> flat; still need to find the "sweet spot"; try 0.001
-    #alpha_t_sigma = pm.HalfNormal("alpha_t_sigma", sigma=rw_shrinkage)
-    #alpha_t = pm.GaussianRandomWalk("alpha_t", sigma=alpha_t_sigma, shape=n_months, init_dist=pm.Normal.dist(0, 0.1))
-
     # α_i: serotype-specific baseline
     # Model the time-independent Brasil-average subtype composition
     alpha_i_sigma = pm.HalfNormal("alpha_i_sigma", sigma=1.0)
     alpha_i = pm.Normal("alpha_i", mu=0.0, sigma=alpha_i_sigma, shape=n_serotypes)
 
-    # α_{i,t}: serotype-specific temporal trends as RW(1) -- unpooled 
-    # Allows the serotype distribution to vary over time
-    # Per-serotype standard deviations (with shrinkage)
-    alpha_it_sigma = pm.HalfNormal("alpha_it_sigma", sigma=rw_shrinkage, shape=n_serotypes)
-    # Per-serotype RW(1)
-    alpha_it_list = []
-    for i in range(n_serotypes):
-        a = pm.GaussianRandomWalk(f"alpha_it_{i}", sigma=alpha_it_sigma[i], shape=n_months, init_dist=pm.Normal.dist(mu=0, sigma=0.1))
-        alpha_it_list.append(a)
-    # Stack to shape (n_months, n_serotypes)
-    alpha_it = pm.Deterministic("alpha_it", pt.stack(alpha_it_list, axis=1))
-
-    # α_{s,i}: state-serotype spatial CAR structure with inferred distance kernel
-    # Models the spatial correlation between subtype compositions --> Improves fit!
-    ## Define variables
+    # Try to combine an AR(p) with a CAR prior on every timestep in the past
+    # priors for zetas and a per serotype per lag
+    p = 1
+    rw_shrinkage = pm.HalfNormal("rw_shrinkage", sigma=0.1)
+    alpha_t_sigma = pm.HalfNormal("alpha_t_sigma", sigma=rw_shrinkage, shape=n_serotypes)
+    zeta_car = pm.Exponential("zeta_car", lam=1/300, shape=(n_serotypes, p))
+    a_car = pm.Beta("a_car", 2, 2, shape=(n_serotypes, p))
+    rho = pm.Beta("rho", 2, 2, shape=(n_serotypes, p))
     D_shared = pm.MutableData("D_shared", D_matrix)
-    zeta_car = pm.Exponential("zeta_car", 1/1000)       # --> Influences how far the serotype composition neighbourhood stretches --> smaller = more local 
-    a_car = pm.Beta("a_car", 2, 2)                      # --> Influences the strength of the correlation within the correlated neighbourhood --> 0 = no spatial correlation
-    ## Build distance weighted kernel
-    W = pt.exp(-D_shared / zeta_car)
-    W = pt.set_subtensor(W[pt.arange(W.shape[0]), pt.arange(W.shape[1])], 0.0)
-    ## Build degree matrix
-    row_sums = W.sum(axis=1)
-    D_mat = pt.diag(row_sums)
-    ## Build precision matrix Q
-    Q = D_mat - a_car * W
-    Q = Q + 1e-6 * pt.eye(W.shape[0])  # Stabilization
-    ## Use in CAR prior
-    sigma_car = pm.HalfNormal("sigma_car", sigma=1.0, shape=n_serotypes) # Weakly informed because I don't want to shrink the spatial correlation too drastically
-    ## loop over serotypes
-    alpha_si_list = []
-    for i in range(n_serotypes):
-        alpha_si_list.append(pm.MvNormal(f"alpha_si_{i}", mu=np.zeros(n_states), cov=sigma_car[i]**2 * pt.nlinalg.matrix_inverse(Q), shape=n_states)) #--> CAR prior
-    alpha_si = pm.Deterministic("alpha_si", pm.math.stack(alpha_si_list, axis=1))  # shape: (n_states, 4)
 
-    # α_{i,t}: serotype-year-specific baseline + α_{i,r,t}: serotype-region-year specific baseline
-    # Final puzzle piece: allow the average serotype composition to change yearly by region
-    # Model serotype-by-region-by-year back as a perturbation to serotype-by-year with shrinkage to control degree of overfitting
-    # First: serotype by year (with its own shrinkage)
-    alpha_i_year_sigma = pm.HalfNormal("alpha_i_year_sigma", sigma=0.001) # --> 0.001: Medium impact; Controls the degree of overfitting
-    alpha_i_year = pm.Normal("alpha_i_year", mu=0.0, sigma=alpha_i_year_sigma, shape=(n_years, n_serotypes))
-    # Then: serotype by region by year as deviation from its respective year
-    eps_i_region_year_sigma = pm.Deterministic("eps_i_region_year_sigma", alpha_i_year_sigma/2)
-    eps_i_region_year = pm.Normal("eps_i_region_year", mu=0.0, sigma=eps_i_region_year_sigma, shape=(n_region_years, n_serotypes))
-    # Final serotype-region-year
-    alpha_i_region_year = pm.Deterministic("alpha_i_region_year", alpha_i_year[year_idx, :] + eps_i_region_year[region_year_idx, :])
+    # Pair-wise kernel first
+    # D_shared: (n_states, n_states)
+    # zeta_car: (n_serotypes, p)
+    # We need to broadcast D_shared against zeta
+    D_expanded = D_shared[None, None, :, :]
+    zeta_expanded = zeta_car[:,:,None, None]
+    # kernel = exp(-D_shared / zeta)
+    W = pt.exp(-D_expanded / zeta_expanded)
+    # Zero diagonal
+    eye = pt.eye(n_states)  # Identity matrix of shape (27, 27)
+    eye = eye[None, None, :, :]
+    W = W * (1 - eye)
+    # Degree matrix
+    degree = pt.sum(W, axis=-1)
+    I = pt.eye(n_states)[None, None, :, :]  # broadcastable identity matrix
+    degree_expanded = degree[:, :, :, None]  # add extra dim for broadcasting
+    D = I * degree_expanded
+    # Q = D - a * W + jitter
+    jitter = 1e-6 * pt.diag(pt.ones(n_states))
+    jitter = jitter[None, None, :, :]
+    Q = D - a_car[:,:,None, None] * W + jitter
+    # Q shape == (n_serotypes, p, n_states, n_states)
 
-    # Construct log θ_{i,s,t}
-    theta_log = (
-        alpha
-        + alpha_s[state_idx][:, None]               # shape (n_obs, 1)
-        #+ alpha_t[month_idx][:, None]               # shape (n_obs, 1)
-        + alpha_i[None, :]                          # shape (1, 4)
-        + alpha_it[month_idx, :]                    # shape (n_obs, 4)
-        + alpha_si[state_idx, :]                    # shape (n_obs, 4)
-        + alpha_i_region_year
-    )  # Result: shape (n_obs, 4)
+    # Cholesky for Q
+    chol = pt.slinalg.cholesky(Q)
+    # solve_triangular to invert
+    L_inv = pytensor.tensor.slinalg.solve_triangular(chol, pt.eye(n_states), lower=True)  # (n_serotypes, p, n_states, n_states)
+    # Transpose to upper bidiagonal
+    L_inv_T = L_inv.transpose((0, 1, 3, 2))  # (n_serotypes, p, n_states, n_states)
+    # Now apply scaling by standard deviations
+    # alpha_t_sigma: (n_serotypes)
+    # We need to broadcast to match (n_serotypes, p, n_states, n_states)
+    alpha_scale = alpha_t_sigma[:,None,None,None]  # adding three dimensions
+    chol = alpha_scale * L_inv_T
 
+    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+    chol_matrix_lag = chol.transpose((1, 0, 2, 3))
+
+
+    alpha_init = pm.Normal("alpha_init", mu=0, sigma=1, shape=(p, n_serotypes, n_states))
+
+    # --- FIX: epsilon now includes innovations for each lag at each timestep ---
+    epsilon = pm.Normal("epsilon", 0, 1, shape=(n_months - p, p, n_serotypes, n_states))
+
+    def arp_step(previous_vals, epsilon_t, rho, chol_matrix_lag):
+        """
+        previous_vals: (p, n_serotypes, n_states)
+        epsilon_t: (p, n_serotypes, n_states)  # innovations for each lag at current timestep
+        """
+        # Compute mean AR contribution across lags
+        mean = sum(rho[:, lag][:, None] * previous_vals[lag] for lag in range(p))  # shape (n_serotypes, n_states)
+
+        # Compute shocks per lag using the correct lag-specific chol matrix
+        shocks = []
+        for lag in range(p):
+            # epsilon_t[lag]: (n_serotypes, n_states)
+            # chol_matrix_lag[lag]: (n_serotypes, n_states, n_states)
+            # We want: for each serotype, epsilon_t[lag][serotype] @ chol_matrix_lag[lag][serotype]
+            # Use batched dot product per serotype
+            # pytensor batched_dot expects shape (batch, n) @ (batch, n, m) -> (batch, m)
+            shock_lag = pt.batched_dot(epsilon_t[lag], chol_matrix_lag[lag])  # shape (n_serotypes, n_states)
+            shocks.append(shock_lag)
+        shock = sum(shocks)  # sum over lags (n_serotypes, n_states)
+        new_vals = mean + shock  # (n_serotypes, n_states)
+
+        # Shift lags down by one, discard oldest lag, prepend new_vals as newest lag
+        # previous_vals[0] is lag 0 (most recent), previous_vals[1] is lag 1, etc.
+        updated_vals = pt.concatenate(
+            [new_vals[None, :, :], previous_vals[:-1]], axis=0
+        )  # shape (p, n_serotypes, n_states)
+        
+        return updated_vals
+
+    sequences, _ = pytensor.scan(
+        fn=arp_step,
+        sequences=epsilon,
+        outputs_info=alpha_init,
+        non_sequences=[rho, chol_matrix_lag],
+    )
+
+    # sequences: (n_months - p, p, n_serotypes, n_states)
+    # alpha_init: (p, n_serotypes, n_states)
+    theta_log_final = pt.concatenate([pt.repeat(alpha_init[None, :, :, :], p, axis=0), sequences], axis=0)
+    # Step 3: slice lag zero (p=0) over full time axis
+    theta_log_final = theta_log_final[:, 0, :, :]  # shape (n_months, n_serotypes, n_states)
+    # Step 4: convert to flat format
+    theta_log_final_flat = theta_log_final.reshape((len(df), n_serotypes))
+
+    # combine all terms
+    theta_log = alpha + alpha_s[state_idx][:, None] + alpha_i[None, :] + theta_log_final_flat
+
+    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+  
     # Dirichlet prior for subtype fractions
     p = pm.Deterministic("p", pm.math.softmax(theta_log, axis=1))
 
@@ -309,7 +321,7 @@ with pm.Model() as dengue_model:
 
 # NUTS
 with dengue_model:
-    trace = pm.sample(200, tune=100, target_accept=0.99, chains=4, cores=4, init='auto', progressbar=True)
+    trace = pm.sample(100, tune=100, target_accept=1-1e-12, chains=4, cores=4, init='auto', progressbar=True)
 
 # Plot posterior predictive checks
 with dengue_model:
@@ -324,8 +336,8 @@ arviz.to_netcdf(ppc, "ppc.nc")
 
 # Traceplot
 variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
-                  'alpha', 'alpha_s', 'alpha_i', 'alpha_i_sigma', 'alpha_it_sigma',
-                  'zeta_car', 'a_car', 'sigma_car', 'alpha_i_year_sigma', 'alpha_i_year'
+                  'alpha', 'alpha_s', 'alpha_s_sigma', 'alpha_i', 'alpha_i_sigma',
+                  'rw_shrinkage', 'alpha_t_sigma', 'zeta_car', 'a_car', 'rho'
                 ]
 
 for var in variables2plot:
