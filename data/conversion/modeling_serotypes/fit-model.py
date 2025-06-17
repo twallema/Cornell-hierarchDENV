@@ -191,13 +191,32 @@ with pm.Model() as dengue_model:
 
     # Try to combine an AR(p) with a CAR prior on every timestep in the past
     # priors for zetas and a per serotype per lag
-    p = 1
-    rw_shrinkage = pm.HalfNormal("rw_shrinkage", sigma=0.1)
+    p = 6
+    rw_shrinkage = pm.HalfNormal("rw_shrinkage", sigma=0.01)
     alpha_t_sigma = pm.HalfNormal("alpha_t_sigma", sigma=rw_shrinkage, shape=n_serotypes)
-    zeta_car = pm.HalfNormal("zeta_car", 300, shape=(n_serotypes, p))
-    a_car = pm.Beta("a_car", 2, 2, shape=(n_serotypes, p))
     rho = pm.Beta("rho", 2, 2, shape=(n_serotypes, p))
     D_shared = pm.MutableData("D_shared", D_matrix)
+
+    # Base radius (capped)
+    zeta_base = pm.TruncatedNormal("zeta_base", mu=150, sigma=50, lower=1, upper=300, shape=n_serotypes)
+    # Smaller sigma to keep total growth in check
+    zeta_increments = pm.HalfNormal("zeta_increments", sigma=50, shape=(n_serotypes, p - 1))
+    # Now build the sequence of zetas over lags
+    zeta_car = pm.Deterministic(
+        "zeta_car",
+        pt.concatenate([
+            zeta_base[:, None],
+            zeta_base[:, None] + pt.cumsum(zeta_increments, axis=1)
+        ], axis=1)
+    )
+
+    # For strength, use a decreasing linear function on log scale:
+    a_intercept = pm.Normal("a_intercept", mu=4.5, sigma=0.1, shape=n_serotypes)
+    a_slope = pm.Normal("a_slope", mu=-1.5, sigma=0.1, shape=n_serotypes)           # These values correspond to 4.5 --> -4.5 or 0.99 --> 0.01 over the course of 6 lags.
+    lags = pt.arange(p)
+    log_a = a_intercept[:, None] + a_slope[:, None] * lags
+    a_car = pm.Deterministic("a_car", pm.math.sigmoid(log_a))  # keep in (0,1)
+
 
     # Pair-wise kernel first
     # D_shared: (n_states, n_states)
@@ -300,7 +319,7 @@ with pm.Model() as dengue_model:
 
 # NUTS
 with dengue_model:
-    trace = pm.sample(20, tune=30, target_accept=0.99, chains=4, cores=4, init='auto', progressbar=True)
+    trace = pm.sample(100, tune=100, target_accept=0.99, chains=4, cores=4, init='auto', progressbar=True)
 
 # Plot posterior predictive checks
 with dengue_model:
@@ -315,7 +334,7 @@ arviz.to_netcdf(ppc, "ppc.nc")
 
 # Traceplot
 variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
-                  'rw_shrinkage', 'alpha_t_sigma', 'zeta_car', 'a_car', 'rho'
+                  'rw_shrinkage', 'alpha_t_sigma', 'zeta_base', 'zeta_increments', 'a_intercept', 'a_slope', 'rho'
                 ]
 
 for var in variables2plot:
