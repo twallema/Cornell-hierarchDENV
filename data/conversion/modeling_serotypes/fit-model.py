@@ -191,23 +191,23 @@ with pm.Model() as dengue_model:
 
     # Try to combine an AR(p) with a CAR prior on every timestep in the past
     ## priors for autogregression coefficients and overall noise are serotype-specific
-    p = 6
-    rw_shrinkage = pm.HalfNormal("rw_shrinkage", sigma=0.1)
+    p = 3
+    rw_shrinkage = pm.HalfNormal("rw_shrinkage", sigma=1e-12)
     alpha_t_sigma = pm.HalfNormal("alpha_t_sigma", sigma=rw_shrinkage, shape=n_serotypes)
     rho = pm.Beta("rho", 5, 5, shape=(n_serotypes, p))
     D_shared = pm.MutableData("D_shared", D_matrix)
 
     ## Priors for spatial correlation radius (zeta) and strength (a) are serotype-unspecific because of identifiability
     ### Base radius (e.g., ~150 km) and linear slope (e.g., ~25 km increase per lag)
-    zeta_intercept = pm.HalfNormal("zeta_base", 500)
-    zeta_slope = pm.HalfNormal("zeta_slope", sigma=50)
+    zeta_intercept = pm.HalfNormal("zeta_base", 300)
+    zeta_slope = pm.HalfNormal("zeta_slope", sigma=100)
     ### Construct linearly increasing radius over lags: zeta_lag = intercept + slope * lag
     lags = pt.arange(p)
     zeta_car = pm.Deterministic("zeta_car", zeta_intercept + zeta_slope * lags)
 
     # For strength, use a decreasing linear function on log scale:
-    a_intercept = pm.Normal("a_intercept", mu=4.5, sigma=1)
-    a_slope = pm.Normal("a_slope", mu=-1.5, sigma=1)          # These values correspond to 4.5 --> -4.5 or 0.99 --> 0.01 over the course of 6 lags.
+    a_intercept = pm.Normal("a_intercept", mu=3.0, sigma=1)
+    a_slope = pm.Normal("a_slope", mu=-2.0, sigma=1)          # Values 4.5 --> -4.5 corespond to a going from 0.99 --> 0.01 over the course of 6 lags.
     log_a = a_intercept + a_slope * pt.arange(p)
     a_car = pm.Deterministic("a_car", pm.math.sigmoid(log_a))  
 
@@ -312,7 +312,7 @@ with pm.Model() as dengue_model:
 
 # NUTS
 with dengue_model:
-    trace = pm.sample(100, tune=200, target_accept=0.999, chains=4, cores=4, init='adapt_diag', progressbar=True)
+    trace = pm.sample(20, tune=10, target_accept=0.8, chains=4, cores=4, init='auto', progressbar=True)
 
 # Plot posterior predictive checks
 with dengue_model:
