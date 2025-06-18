@@ -192,22 +192,22 @@ with pm.Model() as dengue_model:
     # Try to combine an AR(p) with a CAR prior on every timestep in the past
     ## priors for autogregression coefficients and overall noise are serotype-specific
     p = 6
-    rw_shrinkage = pm.HalfNormal("rw_shrinkage", sigma=0.01)
+    rw_shrinkage = pm.HalfNormal("rw_shrinkage", sigma=0.1)
     alpha_t_sigma = pm.HalfNormal("alpha_t_sigma", sigma=rw_shrinkage, shape=n_serotypes)
-    rho = pm.Beta("rho", 2, 2, shape=(n_serotypes, p))
+    rho = pm.Beta("rho", 5, 5, shape=(n_serotypes, p))
     D_shared = pm.MutableData("D_shared", D_matrix)
 
     ## Priors for spatial correlation radius (zeta) and strength (a) are serotype-unspecific because of identifiability
-    # Base radius (capped)
-    zeta_base = pm.TruncatedNormal("zeta_base", mu=200, sigma=50, lower=50, upper=500)
-    # Smaller sigma to keep total growth in check
-    zeta_increments = pm.HalfNormal("zeta_increments", sigma=100, shape=(p - 1,))
-    # Now build the sequence of zetas over lags
-    zeta_car = pm.Deterministic("zeta_car", pt.concatenate([zeta_base[None], zeta_base + pt.cumsum(zeta_increments)]))
+    ### Base radius (e.g., ~150 km) and linear slope (e.g., ~25 km increase per lag)
+    zeta_intercept = pm.HalfNormal("zeta_base", 500)
+    zeta_slope = pm.HalfNormal("zeta_slope", sigma=50)
+    ### Construct linearly increasing radius over lags: zeta_lag = intercept + slope * lag
+    lags = pt.arange(p)
+    zeta_car = pm.Deterministic("zeta_car", zeta_intercept + zeta_slope * lags)
 
     # For strength, use a decreasing linear function on log scale:
-    a_intercept = pm.Normal("a_intercept", mu=4.5, sigma=0.1)
-    a_slope = pm.Normal("a_slope", mu=-1.5, sigma=0.1)          # These values correspond to 4.5 --> -4.5 or 0.99 --> 0.01 over the course of 6 lags.
+    a_intercept = pm.Normal("a_intercept", mu=4.5, sigma=1)
+    a_slope = pm.Normal("a_slope", mu=-1.5, sigma=1)          # These values correspond to 4.5 --> -4.5 or 0.99 --> 0.01 over the course of 6 lags.
     log_a = a_intercept + a_slope * pt.arange(p)
     a_car = pm.Deterministic("a_car", pm.math.sigmoid(log_a))  
 
@@ -312,7 +312,7 @@ with pm.Model() as dengue_model:
 
 # NUTS
 with dengue_model:
-    trace = pm.sample(500, tune=500, target_accept=0.999, chains=4, cores=4, init='auto', progressbar=True)
+    trace = pm.sample(100, tune=200, target_accept=0.999, chains=4, cores=4, init='adapt_diag', progressbar=True)
 
 # Plot posterior predictive checks
 with dengue_model:
@@ -321,19 +321,21 @@ arviz.plot_ppc(ppc)
 plt.savefig('ppc.pdf')
 plt.close()
 
+
 # Assume `trace` is the result of pm.sample()
 arviz.to_netcdf(trace, "trace.nc")
 arviz.to_netcdf(ppc, "ppc.nc")
 
 # Traceplot
 variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
-                  'rw_shrinkage', 'alpha_t_sigma', 'zeta_base', 'zeta_increments', 'a_intercept', 'a_slope', 'rho'
+                  'rw_shrinkage', 'alpha_t_sigma', 'zeta_base', 'zeta_slope', 'a_intercept', 'a_slope', 'rho'
                 ]
 
 for var in variables2plot:
     arviz.plot_trace(trace, var_names=[var]) 
     plt.savefig(f'trace-{var}_typing-effort-model.pdf')
     plt.close()
+
 
 # Print summary
 summary_df = arviz.summary(trace, round_to=3)
