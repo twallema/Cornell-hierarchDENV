@@ -191,19 +191,23 @@ with pm.Model() as dengue_model:
 
     # Try to combine an AR(p) with a CAR prior on every timestep in the past
     ## priors for autogregression coefficients and overall noise are serotype-specific
-    p = 4
+    p = 6
 
     ## Regularisation of the overall noise
-    log_alpha_t_sigma = pm.Normal("log_alpha_t_sigma", mu=np.log(0.05), sigma=0.5)
+    log_alpha_t_sigma = pm.Normal("log_alpha_t_sigma", mu=np.log(0.05), sigma=0.1)
     alpha_t_sigma = pm.Deterministic("alpha_t_sigma", pt.exp(log_alpha_t_sigma))
 
-    ## Temporal correlation structure 
-    decay_mean = 1 / (np.arange(1, p + 1) + 1e-1)
-    log_concentration = pm.Normal("log_concentration", mu=3, sigma=1, shape=n_serotypes)
-    concentration = pm.Deterministic("concentration", pt.exp(log_concentration))
-    alpha = decay_mean[None,:] * concentration[:,None]
-    beta = (1 - decay_mean)[None,:] * concentration[:,None]
-    rho = pm.Beta("rho", alpha=alpha, beta=beta, shape=(n_serotypes,p))
+    ## Temporal correlation structure: decaying weights 1/k**gamma with gamma per serotype
+    gamma = pm.Uniform("gamma", 0.25, 2, shape=n_serotypes)
+    decay_mean = 1 / ((np.arange(1, p + 1)[None,:] + 0.01)**gamma[:,None])
+    rho = pm.Deterministic("rho", decay_mean)
+    
+    # log_concentration = pm.Normal("log_concentration", mu=3, sigma=1, shape=n_serotypes)
+    # concentration = pm.Deterministic("concentration", pt.exp(log_concentration))
+    # alpha = decay_mean[None,:] * concentration[:,None]
+    # beta = (1 - decay_mean)[None,:] * concentration[:,None]
+    #rho = pm.Beta("rho", alpha=alpha, beta=beta, shape=(n_serotypes,p))
+    
 
     ## Priors for spatial correlation radius (zeta) 
     ### Base radius and linear slope per lag
@@ -215,8 +219,8 @@ with pm.Model() as dengue_model:
 
     ## Priors for spatial correlation strength (a)
     # For strength, use a decreasing linear function on log scale:
-    a_intercept = 3
-    a_slope = pm.Normal("a_slope", mu=-0.5, sigma=0.1)          # Values 3 --> -3 corespond to a going from a=0.95 --> a=0.05
+    a_intercept = 4.5
+    a_slope = pm.Normal("a_slope", mu=-1.5, sigma=0.1)          # Values 3 --> -3 corespond to a going from a=0.95 --> a=0.05
     log_a = a_intercept + a_slope * pt.arange(p)
     a_car = pm.Deterministic("a_car", pm.math.sigmoid(log_a))  
 
@@ -282,7 +286,6 @@ with pm.Model() as dengue_model:
 
         return updated_vals
 
-
     sequences, _ = pytensor.scan(
         fn=arp_step,
         sequences=epsilon,
@@ -320,7 +323,7 @@ with pm.Model() as dengue_model:
 
 # NUTS
 with dengue_model:
-    trace = pm.sample(30, tune=30, target_accept=0.99, chains=3, cores=3, init='adapt_diag', progressbar=True)
+    trace = pm.sample(100, tune=50, target_accept=0.99, chains=4, cores=4, init='adapt_diag', progressbar=True)
 
 # Plot posterior predictive checks
 with dengue_model:
@@ -336,7 +339,7 @@ arviz.to_netcdf(ppc, "ppc.nc")
 
 # Traceplot
 variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
-                  'rho', 'alpha_t_sigma', 'concentration', 'zeta_slope', 'a_slope',
+                  'rho', 'gamma', 'log_alpha_t_sigma', 'alpha_t_sigma', 'zeta_slope', 'a_slope',
                 ]
 
 for var in variables2plot:
