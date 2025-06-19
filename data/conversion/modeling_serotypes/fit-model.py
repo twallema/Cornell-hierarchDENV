@@ -191,23 +191,24 @@ with pm.Model() as dengue_model:
 
     # Try to combine an AR(p) with a CAR prior on every timestep in the past
     ## priors for autogregression coefficients and overall noise are serotype-specific
-    p = 3
-    rw_shrinkage = pm.HalfNormal("rw_shrinkage", sigma=1e-12)
+    p = 12
+    rw_shrinkage = pm.HalfNormal("rw_shrinkage", sigma=0.01)
     alpha_t_sigma = pm.HalfNormal("alpha_t_sigma", sigma=rw_shrinkage, shape=n_serotypes)
-    rho = pm.Beta("rho", 5, 5, shape=(n_serotypes, p))
+    rho = pm.Beta("rho", 1, 1, shape=(n_serotypes, p))
     D_shared = pm.MutableData("D_shared", D_matrix)
 
-    ## Priors for spatial correlation radius (zeta) and strength (a) are serotype-unspecific because of identifiability
-    ### Base radius (e.g., ~150 km) and linear slope (e.g., ~25 km increase per lag)
-    zeta_intercept = pm.HalfNormal("zeta_base", 300)
+    ## Priors for spatial correlation radius (zeta) 
+    ### Base radius and linear slope per lag
+    zeta_intercept = 50
     zeta_slope = pm.HalfNormal("zeta_slope", sigma=100)
     ### Construct linearly increasing radius over lags: zeta_lag = intercept + slope * lag
     lags = pt.arange(p)
     zeta_car = pm.Deterministic("zeta_car", zeta_intercept + zeta_slope * lags)
 
+    ## Priors for spatial correlation strength (a)
     # For strength, use a decreasing linear function on log scale:
-    a_intercept = pm.Normal("a_intercept", mu=3.0, sigma=1)
-    a_slope = pm.Normal("a_slope", mu=-2.0, sigma=1)          # Values 4.5 --> -4.5 corespond to a going from 0.99 --> 0.01 over the course of 6 lags.
+    a_intercept = 3
+    a_slope = pm.Normal("a_slope", mu=-0.5, sigma=0.1)          # Values 3 --> -3 corespond to a going from a=0.95 --> a=0.05
     log_a = a_intercept + a_slope * pt.arange(p)
     a_car = pm.Deterministic("a_car", pm.math.sigmoid(log_a))  
 
@@ -224,7 +225,7 @@ with pm.Model() as dengue_model:
     I = pt.eye(n_states)[None, None, :, :]
     D = I * degree
     # Q = D - a * W + jitter
-    jitter = 1e-6 * pt.diag(pt.ones(n_states))
+    jitter = 1e-9 * pt.diag(pt.ones(n_states))
     jitter = jitter[None, None, :, :]
     Q = D - a_car[None,:,None, None] * W + jitter
     # Q shape == (n_serotypes, p, n_states, n_states)
@@ -243,39 +244,39 @@ with pm.Model() as dengue_model:
     chol_matrix_lag = chol.transpose((1, 0, 2, 3)) # shape == (p, n_serotypes, n_states, n_states) --> makes more sense
 
     # initialise initial condition
-    alpha_init = pm.Normal("alpha_init", mu=0, sigma=1, shape=(p, n_serotypes, n_states))
+    alpha_init = pm.Normal("alpha_init", mu=0, sigma=0.1, shape=(p, n_serotypes, n_states))
 
     # --- FIX: epsilon now includes innovations for each lag at each timestep ---
     epsilon = pm.Normal("epsilon", 0, 1, shape=(n_months - p, p, n_serotypes, n_states))
 
     def arp_step(previous_vals, epsilon_t, rho, chol_matrix_lag):
-        """
-        previous_vals: (p, n_serotypes, n_states)
-        epsilon_t: (p, n_serotypes, n_states)  # innovations for each lag at current timestep
-        """
-        # Compute mean AR contribution across lags
-        mean = sum(rho[:, lag][:, None] * previous_vals[lag] for lag in range(p))  # shape (n_serotypes, n_states)
+            """
+            previous_vals: (p, n_serotypes, n_states)
+            epsilon_t: (p, n_serotypes, n_states)  # innovations for each lag at current timestep
+            """
+            # Compute mean AR contribution across lags
+            mean = sum(rho[:, lag][:, None] * previous_vals[lag] for lag in range(p))  # shape (n_serotypes, n_states)
 
-        # Compute shocks per lag using the correct lag-specific chol matrix
-        shocks = []
-        for lag in range(p):
-            # epsilon_t[lag]: (n_serotypes, n_states)
-            # chol_matrix_lag[lag]: (n_serotypes, n_states, n_states)
-            # We want: for each serotype, epsilon_t[lag][serotype] @ chol_matrix_lag[lag][serotype]
-            # Use batched dot product per serotype
-            # pytensor batched_dot expects shape (batch, n) @ (batch, n, m) -> (batch, m)
-            shock_lag = pt.batched_dot(epsilon_t[lag], chol_matrix_lag[lag])  # shape (n_serotypes, n_states)
-            shocks.append(shock_lag)
-        shock = sum(shocks)  # sum over lags (n_serotypes, n_states)
-        new_vals = mean + shock  # (n_serotypes, n_states)
+            # Compute shocks per lag using the correct lag-specific chol matrix
+            shocks = []
+            for lag in range(p):
+                # epsilon_t[lag]: (n_serotypes, n_states)
+                # chol_matrix_lag[lag]: (n_serotypes, n_states, n_states)
+                # We want: for each serotype, epsilon_t[lag][serotype] @ chol_matrix_lag[lag][serotype]
+                # Use batched dot product per serotype
+                # pytensor batched_dot expects shape (batch, n) @ (batch, n, m) -> (batch, m)
+                shock_lag = pt.batched_dot(epsilon_t[lag], chol_matrix_lag[lag])  # shape (n_serotypes, n_states)
+                shocks.append(shock_lag)
+            shock = sum(shocks)  # sum over lags (n_serotypes, n_states)
+            new_vals = mean + shock  # (n_serotypes, n_states)
 
-        # Shift lags down by one, discard oldest lag, prepend new_vals as newest lag
-        # previous_vals[0] is lag 0 (most recent), previous_vals[1] is lag 1, etc.
-        updated_vals = pt.concatenate(
-            [new_vals[None, :, :], previous_vals[:-1]], axis=0
-        )  # shape (p, n_serotypes, n_states)
-        
-        return updated_vals
+            # Shift lags down by one, discard oldest lag, prepend new_vals as newest lag
+            # previous_vals[0] is lag 0 (most recent), previous_vals[1] is lag 1, etc.
+            updated_vals = pt.concatenate(
+                [new_vals[None, :, :], previous_vals[:-1]], axis=0
+            )  # shape (p, n_serotypes, n_states)
+            
+            return updated_vals
 
     sequences, _ = pytensor.scan(
         fn=arp_step,
@@ -292,8 +293,10 @@ with pm.Model() as dengue_model:
     # Step 4: convert to flat format
     theta_log_final_flat = theta_log_final.reshape((len(df), n_serotypes))
 
-    # combine all terms
-    theta_log =  theta_log_final_flat
+    # Construct log θ_{i,s,t}
+    theta_log = (
+        theta_log_final_flat
+    )  # Result: shape (n_obs, 4)
 
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
   
@@ -312,7 +315,7 @@ with pm.Model() as dengue_model:
 
 # NUTS
 with dengue_model:
-    trace = pm.sample(20, tune=10, target_accept=0.8, chains=4, cores=4, init='auto', progressbar=True)
+    trace = pm.sample(200, tune=200, target_accept=0.99, chains=3, cores=3, init='adapt_diag', progressbar=True)
 
 # Plot posterior predictive checks
 with dengue_model:
