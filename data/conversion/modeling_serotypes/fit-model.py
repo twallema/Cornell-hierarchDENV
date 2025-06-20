@@ -71,6 +71,8 @@ assert all(col in df.columns for col in required_cols)
 # 2. Sort for safety
 df = df.sort_values(["date", "UF"]).reset_index(drop=True)
 
+df = df[df['date'] > datetime(1999,1,1)]
+
 # 3. Factorize states and time
 df["state_idx"], _ = pd.factorize(df["UF"])
 df["month_idx"], _ = pd.factorize(df["date"])
@@ -166,12 +168,19 @@ with pm.Model() as dengue_model:
     # Final state-year effect
     beta_st = pm.Deterministic("beta_st", beta_rt[region_year_idx] + eps_st[state_year_idx])
 
+    # # 𝛿_{s,t} ~ 𝐵𝑒𝑡𝑎(𝜇_{s,t}.𝜙, (1 − 𝜇_{s,t}).𝜙)
+    # # logit(𝜇_{s,t})
+    # mu = pm.Deterministic("mu", pm.math.sigmoid(beta + beta_st))
+    # phi = pm.HalfNormal("phi", sigma=5.0)
+    # alpha_beta = mu * phi
+    # beta_beta = (1 - mu) * phi
+    # delta_st = pm.Beta("delta_st", alpha=alpha_beta, beta=beta_beta, observed=delta_obs)
     # Alternative: model serotyped fraction as a logit-normal since beta is close to zero
     logit_delta_obs = np.log(delta_obs / (1 - delta_obs)) 
     logit_mu = beta  + beta_st
     # logit_delta_sigma is important because it controls the overall noise levels on the serotyped cases (lower = less noise)
     # it also controls an important trade-off in this model: the relationship between N_total and N_typed is not perfectly linear, i.e. you can't fit both N_total and delta_st perfectly
-    # Values of 0.001-0.002 sacrifices delta_st for a better fit to N_total, while a value of 0.01 gives a good fit to delta_st but a poorer fit to N_typed an too much uncertainty
+    # Values of 0.001-0.002 sacrifices delta_st for a better fit to N_total, while a value of 0.001 gives a good fit to delta_st but a poorer fit to N_typed an too much uncertainty
     # Opposed
     logit_delta_sigma = pm.HalfNormal("logit_delta_sigma", sigma=0.002) 
     logit_delta = pm.Normal("logit_delta", mu=logit_mu, sigma=logit_delta_sigma, observed=logit_delta_obs)
@@ -181,9 +190,8 @@ with pm.Model() as dengue_model:
     N_typed_latent = pm.Binomial("N_typed_latent", n=N_total, p=delta_st, observed=N_typed)
 
     # N^*_{s,t} ~ Poisson(N_{total,s,t} * \delta_{s,t}) --> Less brutal likelihood than Binomial
-    # lambda_ = pm.Deterministic("lambda_", N_total * delta_st)
-    # N_typed_latent = pm.Poisson("N_typed_latent", mu=lambda_, observed=N_typed)
-
+    #lambda_ = pm.Deterministic("lambda_", N_total * delta_st)
+    #N_typed_latent = pm.Poisson("N_typed_latent", mu=lambda_, observed=N_typed)
 
     # --- Subtype Composition Model ---
     # p_{i,s,t} ~ Dirichlet(\theta_{i,s,t})
@@ -194,20 +202,28 @@ with pm.Model() as dengue_model:
     p = 6
 
     ## Regularisation of the overall noise
-    log_alpha_t_sigma = pm.Normal("log_alpha_t_sigma", mu=np.log(0.05), sigma=0.1)
-    alpha_t_sigma = pm.Deterministic("alpha_t_sigma", pt.exp(log_alpha_t_sigma))
+    alpha_t_sigma_shrinkage = pm.HalfNormal("alpha_t_sigma_shrinkage", sigma=0.01)
+    alpha_t_sigma = pm.HalfNormal("alpha_t_sigma", sigma=alpha_t_sigma_shrinkage, shape=n_serotypes)
 
-    ## Temporal correlation structure: decaying weights 1/k**gamma with gamma per serotype
-    gamma = pm.Uniform("gamma", 0.25, 2, shape=n_serotypes)
-    decay_mean = 1 / ((np.arange(1, p + 1)[None,:] + 0.01)**gamma[:,None])
-    rho = pm.Deterministic("rho", decay_mean)
-    
-    # log_concentration = pm.Normal("log_concentration", mu=3, sigma=1, shape=n_serotypes)
-    # concentration = pm.Deterministic("concentration", pt.exp(log_concentration))
-    # alpha = decay_mean[None,:] * concentration[:,None]
-    # beta = (1 - decay_mean)[None,:] * concentration[:,None]
-    #rho = pm.Beta("rho", alpha=alpha, beta=beta, shape=(n_serotypes,p))
-    
+    ## Temporal correlation structure: Decaying weights rho_k = 1/(k**gamma_i) --> identifiable but I think this is too strict
+    # gamma = pm.Uniform("gamma", 0.25, 2, shape=n_serotypes)
+    # decay_mean = 1 / ((np.arange(1, p + 1)[None,:] + 0.01)**gamma[:,None])
+    # rho = pm.Deterministic("rho", decay_mean)
+
+    ## Temporal correlation structure: Decaying weights rho_k ~ Beta() with mean = 1/(k**gamma_i) and hierarchical concentration parameter per serotype --> should be more loose
+    # Fix first lag to one as an anchor
+    rho_first = pt.ones((n_serotypes, 1))
+    # But allow great flexibility in remaining lags: rho[:, 1:] ~ Beta(mean = 1/k^γ, conc = flexible)
+    gamma = pm.TruncatedNormal("gamma", mu=1.0, sigma=0.1, lower=0, shape=n_serotypes)
+    decay_mean = 1.0 / (np.arange(2, p + 1)[None, :] ** gamma[:, None])  # shape: (n_serotypes, p-1)
+    # Hierarchical concentration to control variability
+    log_concentration = pm.Normal("log_concentration", mu=3, sigma=0.5, shape=n_serotypes)
+    concentration = pm.Deterministic("concentration", pt.exp(log_concentration))
+    alpha = decay_mean * concentration[:, None]
+    beta = (1 - decay_mean) * concentration[:, None]
+    rho_rest = pm.Beta("rho_rest", alpha=alpha, beta=beta, shape=(n_serotypes, p - 1))
+    # Concatenate fixed and sampled parts
+    rho = pm.Deterministic("rho", pt.concatenate([rho_first, rho_rest], axis=1))  # shape: (n_serotypes, p)
 
     ## Priors for spatial correlation radius (zeta) 
     ### Base radius and linear slope per lag
@@ -238,30 +254,30 @@ with pm.Model() as dengue_model:
     I = pt.eye(n_states)[None, None, :, :]
     D = I * degree
     # Q = D - a * W + jitter
-    jitter = 1e-9 * pt.diag(pt.ones(n_states))
+    jitter = 1e-3 * pt.diag(pt.ones(n_states))
     jitter = jitter[None, None, :, :]
     Q = D - a_car[None,:,None, None] * W + jitter
     # Q shape == (n_serotypes, p, n_states, n_states)
 
     # Compute the Cholesky of Q
     chol = pt.slinalg.cholesky(Q)
-    # solve_triangular to 
-    L_inv = pytensor.tensor.slinalg.solve_triangular(chol, pt.eye(n_states), lower=True)  # (n_serotypes, p, n_states, n_states)
-    # Transpose to upper bidiagonal
-    L_inv_T = L_inv.transpose((0, 1, 3, 2))  # (n_serotypes, p, n_states, n_states)
-    # Now apply scaling by standard deviations and reconstruct chol
-    chol = alpha_t_sigma * L_inv_T
+    # # solve_triangular to 
+    # L_inv = pytensor.tensor.slinalg.solve_triangular(chol, pt.eye(n_states), lower=True)  # (n_serotypes, p, n_states, n_states)
+    # # Transpose to upper bidiagonal
+    # L_inv_T = L_inv.transpose((0, 1, 3, 2))  # (n_serotypes, p, n_states, n_states)
+    # # Now apply scaling by standard deviations and reconstruct chol
+    # chol = alpha_t_sigma[:,None,None,None] * L_inv_T
 
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     chol_matrix_lag = chol.transpose((1, 0, 2, 3)) # shape == (p, n_serotypes, n_states, n_states) --> makes more sense
-
+    
     # initialise initial condition
     alpha_init = pm.Normal("alpha_init", mu=0, sigma=0.1, shape=(p, n_serotypes, n_states))
 
     # --- FIX: epsilon now includes innovations for each lag at each timestep ---
     epsilon = pm.Normal("epsilon", 0, 1, shape=(n_months - p, p, n_serotypes, n_states))
 
-    def arp_step(previous_vals, epsilon_t, rho, chol_matrix_lag):
+    def arp_step(previous_vals, epsilon_t, rho, chol_matrix_lag, alpha_t_sigma):
         """
         previous_vals: (p, n_serotypes, n_states)
         epsilon_t: (p, n_serotypes, n_states)
@@ -269,7 +285,7 @@ with pm.Model() as dengue_model:
         contributions = []
         for lag in range(p):
             # Compute spatial perturbation
-            shock_lag = pt.batched_dot(epsilon_t[lag], chol_matrix_lag[lag])  # (n_serotypes, n_states)
+            shock_lag = alpha_t_sigma[:,None] * pt.batched_dot(epsilon_t[lag], chol_matrix_lag[lag])  # (n_serotypes, n_states)
             # Add to lagged value
             state_plus_noise = previous_vals[lag] + shock_lag  # (n_serotypes, n_states)
             # Apply temporal weight rho_k (serotype-specific)
@@ -290,7 +306,7 @@ with pm.Model() as dengue_model:
         fn=arp_step,
         sequences=epsilon,
         outputs_info=alpha_init,
-        non_sequences=[rho, chol_matrix_lag],
+        non_sequences=[rho, chol_matrix_lag, alpha_t_sigma],
     )
 
     # sequences: (n_months - p, p, n_serotypes, n_states)
@@ -305,7 +321,7 @@ with pm.Model() as dengue_model:
     theta_log = (
         theta_log_final_flat
     )  # Result: shape (n_obs, 4)
-
+    
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
   
     # Dirichlet prior for subtype fractions
@@ -323,7 +339,7 @@ with pm.Model() as dengue_model:
 
 # NUTS
 with dengue_model:
-    trace = pm.sample(100, tune=50, target_accept=0.99, chains=4, cores=4, init='adapt_diag', progressbar=True)
+    trace = pm.sample(40, tune=20, target_accept=0.8, chains=6, cores=6, init='adapt_diag', progressbar=True)
 
 # Plot posterior predictive checks
 with dengue_model:
@@ -339,7 +355,7 @@ arviz.to_netcdf(ppc, "ppc.nc")
 
 # Traceplot
 variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
-                  'rho', 'gamma', 'log_alpha_t_sigma', 'alpha_t_sigma', 'zeta_slope', 'a_slope',
+                  'rho', 'gamma', 'concentration', 'alpha_t_sigma_shrinkage', 'alpha_t_sigma', 'zeta_slope', 'a_slope',
                 ]
 
 for var in variables2plot:
