@@ -202,7 +202,7 @@ with pm.Model() as dengue_model:
     p = 6
 
     ## Regularisation of the overall noise
-    alpha_t_sigma_shrinkage = pm.HalfNormal("alpha_t_sigma_shrinkage", sigma=0.01)
+    alpha_t_sigma_shrinkage = pm.HalfNormal("alpha_t_sigma_shrinkage", sigma=0.002)
     alpha_t_sigma = pm.HalfNormal("alpha_t_sigma", sigma=alpha_t_sigma_shrinkage, shape=n_serotypes)
 
     ## Temporal correlation structure: Decaying weights rho_k = 1/(k**gamma_i) --> identifiable but I think this is too strict
@@ -261,12 +261,6 @@ with pm.Model() as dengue_model:
 
     # Compute the Cholesky of Q
     chol = pt.slinalg.cholesky(Q)
-    # # solve_triangular to 
-    # L_inv = pytensor.tensor.slinalg.solve_triangular(chol, pt.eye(n_states), lower=True)  # (n_serotypes, p, n_states, n_states)
-    # # Transpose to upper bidiagonal
-    # L_inv_T = L_inv.transpose((0, 1, 3, 2))  # (n_serotypes, p, n_states, n_states)
-    # # Now apply scaling by standard deviations and reconstruct chol
-    # chol = alpha_t_sigma[:,None,None,None] * L_inv_T
 
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     chol_matrix_lag = chol.transpose((1, 0, 2, 3)) # shape == (p, n_serotypes, n_states, n_states) --> makes more sense
@@ -339,7 +333,7 @@ with pm.Model() as dengue_model:
 
 # NUTS
 with dengue_model:
-    trace = pm.sample(40, tune=20, target_accept=0.8, chains=6, cores=6, init='adapt_diag', progressbar=True)
+    trace = pm.sample(200, tune=200, target_accept=0.999, chains=6, cores=6, init='adapt_diag', progressbar=True)
 
 # Plot posterior predictive checks
 with dengue_model:
