@@ -246,7 +246,7 @@ with pm.Model() as dengue_model:
     # We need to broadcast D_shared against zeta
     D_shared = pm.MutableData("D_shared", D_matrix)
     D_expanded = D_shared[None, None, :, :]
-    zeta_expanded = zeta_car[None,:,None, None]
+    zeta_expanded = pt.repeat(zeta_car[None, :], n_serotypes, axis=0)[:, :, None, None]   
     # kernel = exp(-D_shared / zeta)
     W = pt.exp(-D_expanded / zeta_expanded)
     # Construct degree tensor (matrix equivalent: row sums of weighted distance matrix on diagonal of eye(n_states))
