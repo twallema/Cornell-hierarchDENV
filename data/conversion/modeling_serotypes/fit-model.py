@@ -199,35 +199,35 @@ with pm.Model() as dengue_model:
 
     # Try to combine an AR(p) with a CAR prior on every timestep in the past
     ## priors for autogregression coefficients and overall noise are serotype-specific
-    p = 6
+    p = 1
 
     ## Regularisation of the overall noise
-    alpha_t_sigma_shrinkage = pm.HalfNormal("alpha_t_sigma_shrinkage", sigma=0.002)
+    alpha_t_sigma_shrinkage = pm.HalfNormal("alpha_t_sigma_shrinkage", sigma=0.10)
     alpha_t_sigma = pm.HalfNormal("alpha_t_sigma", sigma=alpha_t_sigma_shrinkage, shape=n_serotypes)
 
     ## Temporal correlation structure: Decaying weights rho_k = 1/(k**gamma_i) --> identifiable but I think this is too strict
-    # gamma = pm.Uniform("gamma", 0.25, 2, shape=n_serotypes)
-    # decay_mean = 1 / ((np.arange(1, p + 1)[None,:] + 0.01)**gamma[:,None])
-    # rho = pm.Deterministic("rho", decay_mean)
+    gamma = pt.ones(n_serotypes)
+    decay_mean = 1 / ((np.arange(1, p + 1)[None,:])**gamma[:,None])
+    rho = pm.Deterministic("rho", decay_mean)
 
     ## Temporal correlation structure: Decaying weights rho_k ~ Beta() with mean = 1/(k**gamma_i) and hierarchical concentration parameter per serotype --> should be more loose
-    # Fix first lag to one as an anchor
-    rho_first = pt.ones((n_serotypes, 1))
-    # But allow great flexibility in remaining lags: rho[:, 1:] ~ Beta(mean = 1/k^γ, conc = flexible)
-    gamma = pm.TruncatedNormal("gamma", mu=1.0, sigma=0.1, lower=0, shape=n_serotypes)
-    decay_mean = 1.0 / (np.arange(2, p + 1)[None, :] ** gamma[:, None])  # shape: (n_serotypes, p-1)
-    # Hierarchical concentration to control variability
-    log_concentration = pm.Normal("log_concentration", mu=3, sigma=0.5, shape=n_serotypes)
-    concentration = pm.Deterministic("concentration", pt.exp(log_concentration))
-    alpha = decay_mean * concentration[:, None]
-    beta = (1 - decay_mean) * concentration[:, None]
-    rho_rest = pm.Beta("rho_rest", alpha=alpha, beta=beta, shape=(n_serotypes, p - 1))
-    # Concatenate fixed and sampled parts
-    rho = pm.Deterministic("rho", pt.concatenate([rho_first, rho_rest], axis=1))  # shape: (n_serotypes, p)
+    # # Fix first lag to one as an anchor
+    # rho_first = pt.ones((n_serotypes, 1))
+    # # But allow great flexibility in remaining lags: rho[:, 1:] ~ Beta(mean = 1/k^γ, conc = flexible)
+    # gamma = 1 #pm.TruncatedNormal("gamma", mu=1.0, sigma=0.1, lower=0, shape=n_serotypes)
+    # decay_mean = 1.0 / (np.arange(2, p + 1)[None, :]) # ** gamma[:, None])  # shape: (n_serotypes, p-1)
+    # # Hierarchical concentration to control variability
+    # log_concentration = pm.Normal("log_concentration", mu=4, sigma=0.5, shape=n_serotypes)
+    # concentration = pm.Deterministic("concentration", pt.exp(log_concentration))
+    # alpha = decay_mean * concentration[:, None]
+    # beta = (1 - decay_mean) * concentration[:, None]
+    # rho_rest = pm.Beta("rho_rest", alpha=alpha, beta=beta, shape=(n_serotypes, p - 1))
+    # # Concatenate fixed and sampled parts
+    # rho = pm.Deterministic("rho", pt.concatenate([rho_first, rho_rest], axis=1))  # shape: (n_serotypes, p)
 
     ## Priors for spatial correlation radius (zeta) 
     ### Base radius and linear slope per lag
-    zeta_intercept = 50
+    zeta_intercept = pm.TruncatedNormal("zeta_intercept", mu=10, sigma=10, lower=1)
     zeta_slope = pm.HalfNormal("zeta_slope", sigma=100)
     ### Construct linearly increasing radius over lags: zeta_lag = intercept + slope * lag
     lags = pt.arange(p)
@@ -235,7 +235,7 @@ with pm.Model() as dengue_model:
 
     ## Priors for spatial correlation strength (a)
     # For strength, use a decreasing linear function on log scale:
-    a_intercept = 4.5
+    a_intercept = pm.Normal("a_intercept", mu=4.5, sigma=0.5)
     a_slope = pm.Normal("a_slope", mu=-1.5, sigma=0.1)          # Values 3 --> -3 corespond to a going from a=0.95 --> a=0.05
     log_a = a_intercept + a_slope * pt.arange(p)
     a_car = pm.Deterministic("a_car", pm.math.sigmoid(log_a))  
@@ -262,6 +262,9 @@ with pm.Model() as dengue_model:
     # Compute the Cholesky of Q
     chol = pt.slinalg.cholesky(Q)
 
+    # Scale with the noise
+    chol = chol * alpha_t_sigma[:, None, None, None]  # broadcast over p and states
+
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     chol_matrix_lag = chol.transpose((1, 0, 2, 3)) # shape == (p, n_serotypes, n_states, n_states) --> makes more sense
     
@@ -279,7 +282,7 @@ with pm.Model() as dengue_model:
         contributions = []
         for lag in range(p):
             # Compute spatial perturbation
-            shock_lag = alpha_t_sigma[:,None] * pt.batched_dot(epsilon_t[lag], chol_matrix_lag[lag])  # (n_serotypes, n_states)
+            shock_lag = pt.batched_dot(epsilon_t[lag], chol_matrix_lag[lag])  # (n_serotypes, n_states)
             # Add to lagged value
             state_plus_noise = previous_vals[lag] + shock_lag  # (n_serotypes, n_states)
             # Apply temporal weight rho_k (serotype-specific)
@@ -333,7 +336,7 @@ with pm.Model() as dengue_model:
 
 # NUTS
 with dengue_model:
-    trace = pm.sample(200, tune=200, target_accept=0.999, chains=6, cores=6, init='adapt_diag', progressbar=True)
+    trace = pm.sample(100, tune=100, target_accept=0.999, chains=4, cores=4, init='auto', progressbar=True)
 
 # Plot posterior predictive checks
 with dengue_model:
@@ -349,7 +352,7 @@ arviz.to_netcdf(ppc, "ppc.nc")
 
 # Traceplot
 variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
-                  'rho', 'gamma', 'concentration', 'alpha_t_sigma_shrinkage', 'alpha_t_sigma', 'zeta_slope', 'a_slope',
+                  'alpha_t_sigma_shrinkage', 'alpha_t_sigma', 'zeta_intercept', 'zeta_slope', 'a_intercept', 'a_slope', 'alpha_init',
                 ]
 
 for var in variables2plot:
