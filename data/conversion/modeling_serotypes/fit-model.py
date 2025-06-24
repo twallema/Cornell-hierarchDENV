@@ -227,7 +227,6 @@ with pm.Model() as dengue_model:
     # Make uncertainty on subtype proportions time-dependent --> shrinkage has little impact on speed of drifting
     # Drift can grow or shrink uncertainty in the subtyping over time --> removed because no drift detected
     # Took this term out while leaving α_{i,t} in and found out it's pretty much redundant
-    rw_shrinkage = pm.HalfNormal("rw_shrinkage", sigma=0.001) # Value: 0.0001 --> flat; still need to find the "sweet spot"; try 0.001
     #alpha_t_sigma = pm.HalfNormal("alpha_t_sigma", sigma=rw_shrinkage)
     #alpha_t = pm.GaussianRandomWalk("alpha_t", sigma=alpha_t_sigma, shape=n_months, init_dist=pm.Normal.dist(0, 0.1))
 
@@ -239,6 +238,7 @@ with pm.Model() as dengue_model:
     # α_{i,t}: serotype-specific temporal trends as RW(1) -- unpooled 
     # Allows the serotype distribution to vary over time
     # Per-serotype standard deviations (with shrinkage)
+    rw_shrinkage = pm.HalfNormal("rw_shrinkage", sigma=0.001) # Value: 0.0001 --> flat; still need to find the "sweet spot"; try 0.001
     alpha_it_sigma = pm.HalfNormal("alpha_it_sigma", sigma=rw_shrinkage, shape=n_serotypes)
     # Per-serotype RW(1)
     alpha_it_list = []
@@ -252,8 +252,8 @@ with pm.Model() as dengue_model:
     # Models the spatial correlation between subtype compositions --> Improves fit!
     ## Define variables
     D_shared = pm.MutableData("D_shared", D_matrix)
-    zeta_car = pm.Exponential("zeta_car", 1/1000)       # --> Influences how far the serotype composition neighbourhood stretches --> smaller = more local 
-    a_car = pm.Beta("a_car", 2, 2)                      # --> Influences the strength of the correlation within the correlated neighbourhood --> 0 = no spatial correlation
+    zeta_car = pm.HalfNormal("zeta_car", sigma=300)     # --> Influences how far the serotype composition neighbourhood stretches --> smaller = more local 
+    a_car = pm.Beta("a_car", 3, 3)                      # --> Influences the strength of the correlation within the correlated neighbourhood --> 0 = no spatial correlation
     ## Build distance weighted kernel
     W = pt.exp(-D_shared / zeta_car)
     W = pt.set_subtensor(W[pt.arange(W.shape[0]), pt.arange(W.shape[1])], 0.0)
@@ -262,7 +262,7 @@ with pm.Model() as dengue_model:
     D_mat = pt.diag(row_sums)
     ## Build precision matrix Q
     Q = D_mat - a_car * W
-    Q = Q + 1e-6 * pt.eye(W.shape[0])  # Stabilization
+    Q = Q + 1e-9 * pt.eye(W.shape[0])  # Stabilization
     ## Use in CAR prior
     sigma_car = pm.HalfNormal("sigma_car", sigma=1.0, shape=n_serotypes) # Weakly informed because I don't want to shrink the spatial correlation too drastically
     ## loop over serotypes
@@ -309,7 +309,7 @@ with pm.Model() as dengue_model:
 
 # NUTS
 with dengue_model:
-    trace = pm.sample(200, tune=100, target_accept=0.99, chains=4, cores=4, init='auto', progressbar=True)
+    trace = pm.sample(100, tune=100, target_accept=0.99, chains=4, cores=4, init='auto', progressbar=True)
 
 # Plot posterior predictive checks
 with dengue_model:
