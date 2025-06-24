@@ -241,7 +241,7 @@ with pm.Model() as dengue_model:
     # α_{i,t}: serotype-specific temporal trends as RW(1) -- unpooled 
     # Allows the serotype distribution to vary over time
     # Per-serotype standard deviations (with shrinkage)
-    rw_shrinkage = pm.HalfNormal("rw_shrinkage", sigma=0.001) # Value: 0.0001 --> flat; still need to find the "sweet spot"; try 0.001
+    rw_shrinkage = pm.HalfNormal("rw_shrinkage", sigma=0.00025) # Value: 0.0001 --> flat; still need to find the "sweet spot"; try 0.001 --> jiggly but good; try 0.0005 --> better & smoother; try 0.00025
     alpha_it_sigma = pm.HalfNormal("alpha_it_sigma", sigma=rw_shrinkage, shape=n_serotypes)
     # Per-serotype RW(1)
     alpha_it_list = []
@@ -274,17 +274,20 @@ with pm.Model() as dengue_model:
         alpha_si_list.append(pm.MvNormal(f"alpha_si_{i}", mu=np.zeros(n_states), cov=sigma_car[i]**2 * pt.nlinalg.matrix_inverse(Q), shape=n_states)) #--> CAR prior
     alpha_si = pm.Deterministic("alpha_si", pm.math.stack(alpha_si_list, axis=1))  # shape: (n_states, 4)
 
-    # α_{i,t}: serotype-year-specific baseline + α_{i,r,t}: serotype-region-year specific baseline
-    # Final puzzle piece: allow the average serotype composition to change yearly by region
-    # Model serotype-by-region-by-year back as a perturbation to serotype-by-year with shrinkage to control degree of overfitting
+    # α_{i,t} (serotype-year-specific baseline) + α_{i,r,t} (serotype-region-year specific baseline) + α_{i,s,t} (serotype-state-year specific baseline)
+    # Final puzzle piece: OVERFIT! Allow the average serotype composition to change yearly by state but half the allowed stdev at every spatial level to avoid overfit.
+    # Models  serotype-by-state-by-year as a perturbation of serotype-by-region-by-year which is a perturbation of serotype-by-year
     # First: serotype by year (with its own shrinkage)
-    alpha_i_year_sigma = pm.HalfNormal("alpha_i_year_sigma", sigma=0.001) # --> 0.001: Medium impact; Controls the degree of overfitting
+    alpha_i_year_sigma = pm.HalfNormal("alpha_i_year_sigma", sigma=0.002) # --> 0.001: Medium impact; 0.005: Large impact (overfit). Controls the degree of overfitting
     alpha_i_year = pm.Normal("alpha_i_year", mu=0.0, sigma=alpha_i_year_sigma, shape=(n_years, n_serotypes))
-    # Then: serotype by region by year as deviation from its respective year
+    # Second: serotype by region by year as deviation from its respective year
     eps_i_region_year_sigma = pm.Deterministic("eps_i_region_year_sigma", alpha_i_year_sigma/2)
     eps_i_region_year = pm.Normal("eps_i_region_year", mu=0.0, sigma=eps_i_region_year_sigma, shape=(n_region_years, n_serotypes))
+    # Third: serotype by state by year as a deviation from its respective region
+    eps_i_state_year_sigma = pm.Deterministic("eps_i_state_year_sigma", eps_i_region_year_sigma/2)
+    eps_i_state_year = pm.Normal("eps_i_state_year", mu=0.0, sigma=eps_i_state_year_sigma, shape=(n_state_years, n_serotypes))
     # Final serotype-region-year
-    alpha_i_region_year = pm.Deterministic("alpha_i_region_year", alpha_i_year[year_idx, :] + eps_i_region_year[region_year_idx, :])
+    alpha_i_state_year = pm.Deterministic("alpha_i_region_year", alpha_i_year[year_idx, :] + eps_i_region_year[region_year_idx, :] + eps_i_state_year[state_year_idx, :])
 
     # Construct log θ_{i,s,t}
     theta_log = (
@@ -294,7 +297,7 @@ with pm.Model() as dengue_model:
         + alpha_i[None, :]                          # shape (1, 4)
         + alpha_it[month_idx, :]                    # shape (n_obs, 4)
         + alpha_si[state_idx, :]                    # shape (n_obs, 4)
-        + alpha_i_region_year
+        + alpha_i_state_year
     )  # Result: shape (n_obs, 4)
 
     # Dirichlet prior for subtype fractions
@@ -312,7 +315,7 @@ with pm.Model() as dengue_model:
 
 # NUTS
 with dengue_model:
-    trace = pm.sample(100, tune=100, target_accept=0.99, chains=4, cores=4, init='auto', progressbar=True)
+    trace = pm.sample(200, tune=200, target_accept=0.99, chains=4, cores=4, init='auto', progressbar=True)
 
 # Plot posterior predictive checks
 with dengue_model:
