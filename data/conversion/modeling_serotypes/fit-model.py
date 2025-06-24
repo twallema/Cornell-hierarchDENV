@@ -241,7 +241,7 @@ with pm.Model() as dengue_model:
     # α_{i,t}: serotype-specific temporal trends as RW(1) -- unpooled 
     # Allows the serotype distribution to vary over time
     # Per-serotype standard deviations (with shrinkage)
-    rw_shrinkage = pm.HalfNormal("rw_shrinkage", sigma=0.00025) # Value: 0.0001 --> flat; still need to find the "sweet spot"; try 0.001 --> jiggly but good; try 0.0005 --> better & smoother; try 0.00025
+    rw_shrinkage = pm.HalfNormal("rw_shrinkage", sigma=0.00025) # Value: 0.0001 --> flat; still need to find the "sweet spot"; try 0.001 --> jiggly but good; try 0.0005 --> better & smoother; try 0.00025 --> smooth
     alpha_it_sigma = pm.HalfNormal("alpha_it_sigma", sigma=rw_shrinkage, shape=n_serotypes)
     # Per-serotype RW(1)
     alpha_it_list = []
@@ -278,7 +278,7 @@ with pm.Model() as dengue_model:
     # Final puzzle piece: OVERFIT! Allow the average serotype composition to change yearly by state but half the allowed stdev at every spatial level to avoid overfit.
     # Models  serotype-by-state-by-year as a perturbation of serotype-by-region-by-year which is a perturbation of serotype-by-year
     # First: serotype by year (with its own shrinkage)
-    alpha_i_year_sigma = pm.HalfNormal("alpha_i_year_sigma", sigma=0.002) # --> 0.001: Medium impact; 0.005: Large impact (overfit). Controls the degree of overfitting
+    alpha_i_year_sigma = pm.HalfNormal("alpha_i_year_sigma", sigma=0.002) # --> 0.001: Small impact; 0.005: Large impact (overfit). Controls the degree of overfitting
     alpha_i_year = pm.Normal("alpha_i_year", mu=0.0, sigma=alpha_i_year_sigma, shape=(n_years, n_serotypes))
     # Second: serotype by region by year as deviation from its respective year
     eps_i_region_year_sigma = pm.Deterministic("eps_i_region_year_sigma", alpha_i_year_sigma/2)
