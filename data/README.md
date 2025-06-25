@@ -30,6 +30,8 @@ These data are partly confidential and can be found on the Bento lab box.
 
 + `population_weighted_centroid.png`: Illustrates the difference between the geometric and population-weighted centroid of the Brazilian states.
 
++ `adjacency_matrix.csv`: Contains a square origin-destination-type adjacency matrix of the Brasilian states.
+
 ## DENV datasus
 
 + `DENV-serotypes_1996-2025_monthly/weekly.csv`: Weekly or monthly total confirmed (not discarded) DENV cases, as well as number of serotyped cases per DENV serotype. Generated using `DENV_datasus_conversion.py`. 
