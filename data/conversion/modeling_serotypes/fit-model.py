@@ -274,10 +274,15 @@ with pm.Model() as dengue_model:
     # --- FIX: epsilon now includes innovations for each lag at each timestep ---
     epsilon = pm.Normal("epsilon", 0, 1, shape=(n_months - p, p, n_serotypes, n_states))
 
-    def arp_step(previous_vals, epsilon_t, rho, chol_matrix_lag, alpha_t_sigma):
+
+    alpha_t_uncorr_sigma = pm.HalfNormal("alpha_t_uncorr_sigma", sigma=0.1, shape=n_serotypes)
+    epsilon_uncorr = pm.Normal("epsilon_uncorr", mu=0, sigma=1, shape=(n_months - p, n_serotypes, n_states))
+
+    def arp_step(epsilon_t, epsilon_uncorr_t, previous_vals, rho, chol_matrix_lag, alpha_t_uncorr_sigma):
         """
         previous_vals: (p, n_serotypes, n_states)
         epsilon_t: (p, n_serotypes, n_states)
+        epsilon_uncorr_t: (n_serotypes, n_states)
         """
         contributions = []
         for lag in range(p):
@@ -292,19 +297,24 @@ with pm.Model() as dengue_model:
         # Sum across all lags
         new_vals = sum(contributions)  # (n_serotypes, n_states)
 
+        # Add spatially-uncorrelated noise
+        uncorr_noise = epsilon_uncorr_t * alpha_t_uncorr_sigma[:, None]
+        new_vals += uncorr_noise
+
         # Shift lag window: insert new_vals at position 0
         updated_vals = pt.concatenate(
             [new_vals[None, :, :], previous_vals[:-1]], axis=0
         )  # (p, n_serotypes, n_states)
 
         return updated_vals
-
+    
     sequences, _ = pytensor.scan(
         fn=arp_step,
-        sequences=epsilon,
+        sequences=[epsilon, epsilon_uncorr],
         outputs_info=alpha_init,
-        non_sequences=[rho, chol_matrix_lag, alpha_t_sigma],
+        non_sequences=[rho, chol_matrix_lag, alpha_t_uncorr_sigma],
     )
+
 
     # sequences: (n_months - p, p, n_serotypes, n_states)
     # alpha_init: (p, n_serotypes, n_states)
@@ -336,7 +346,7 @@ with pm.Model() as dengue_model:
 
 # NUTS
 with dengue_model:
-    trace = pm.sample(100, tune=100, target_accept=0.999, chains=4, cores=4, init='auto', progressbar=True)
+    trace = pm.sample(200, tune=200, target_accept=0.999, chains=4, cores=4, init='auto', progressbar=True)
 
 # Plot posterior predictive checks
 with dengue_model:
