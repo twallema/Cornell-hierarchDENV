@@ -18,21 +18,14 @@ pytensor.config.on_opt_error = "ignore"
 
 # Distance matrix
 # ~~~~~~~~~~~~~~~
+distance_matrix = True
 
-# Load distance matrix
-D = pd.read_csv('../../interim/weighted_distance_matrix.csv', index_col=0).values
-D_matrix = D
-# weigh with negative exponential decay model to avoid overparametrisation (internalise zeta later)
-zeta = 1000 # km
-W = np.exp(-D / zeta)
-np.fill_diagonal(W, 0)
-# Degree matrix D: diagonal of row sums of W
-D = np.diag(W.sum(axis=1))
-# Fixed alpha
-alpha_fixed = 0.5
-# Build Q
-Q = D - alpha_fixed * W
-Q += 1e-6 * np.eye(Q.shape[0])  # Numerical stabilization
+if distance_matrix == False:
+    # Load adjacency matrix
+    D = pd.read_csv('../../interim/adjacency_matrix.csv', index_col=0).values
+else:
+    # Load distance matrix
+    D = pd.read_csv('../../interim/weighted_distance_matrix.csv', index_col=0).values
 
 # Covariates
 # ~~~~~~~~~~
@@ -254,25 +247,28 @@ with pm.Model() as dengue_model:
     # α_{s,i}: state-serotype spatial CAR structure with inferred distance kernel
     # Models the spatial correlation between subtype compositions --> Improves fit!
     ## Define variables
-    D_shared = pm.MutableData("D_shared", D_matrix)
-    zeta_car = pm.HalfNormal("zeta_car", sigma=300)     # --> Influences how far the serotype composition neighbourhood stretches --> smaller = more local 
+    D_shared = pm.MutableData("D_shared", D)
     a_car = pm.Beta("a_car", 3, 3)                      # --> Influences the strength of the correlation within the correlated neighbourhood --> 0 = no spatial correlation
     ## Build distance weighted kernel
-    W = pt.exp(-D_shared / zeta_car)
-    W = pt.set_subtensor(W[pt.arange(W.shape[0]), pt.arange(W.shape[1])], 0.0)
+    if distance_matrix:
+        zeta_car = pm.HalfNormal("zeta_car", sigma=300) # --> Influences how far the serotype composition neighbourhood stretches --> smaller = more local 
+        W = pt.exp(-D_shared / zeta_car)
+        W = pt.set_subtensor(W[pt.arange(W.shape[0]), pt.arange(W.shape[1])], 0.0)
+    else:
+        W = D_shared
     ## Build degree matrix
-    row_sums = W.sum(axis=1)
-    D_mat = pt.diag(row_sums)
+    degree_matrix = pt.diag(W.sum(axis=1))
     ## Build precision matrix Q
-    Q = D_mat - a_car * W
-    Q = Q + 1e-9 * pt.eye(W.shape[0])  # Stabilization
+    Q = degree_matrix - a_car * W
+    Q = Q + 1e-3 * pt.eye(W.shape[0])  # Stabilization
     ## Use in CAR prior
-    sigma_car = pm.HalfNormal("sigma_car", sigma=1.0, shape=n_serotypes) # Weakly informed because I don't want to shrink the spatial correlation too drastically
-    ## loop over serotypes
-    alpha_si_list = []
-    for i in range(n_serotypes):
-        alpha_si_list.append(pm.MvNormal(f"alpha_si_{i}", mu=np.zeros(n_states), cov=sigma_car[i]**2 * pt.nlinalg.matrix_inverse(Q), shape=n_states)) #--> CAR prior
-    alpha_si = pm.Deterministic("alpha_si", pm.math.stack(alpha_si_list, axis=1))  # shape: (n_states, 4)
+    sigma_car = pm.HalfNormal("sigma_car", sigma=1, shape=n_serotypes) # Weakly informed because I don't want to shrink the spatial correlation too drastically
+    L_Q = pt.slinalg.cholesky(Q)
+    alpha_si_list = [
+        pm.MvNormal(f"alpha_si_{i}", mu=pt.zeros(n_states), chol=sigma_car[i] * L_Q, shape=n_states)
+        for i in range(n_serotypes)
+    ]
+    alpha_si = pm.Deterministic("alpha_si", pt.stack(alpha_si_list, axis=1))
 
     # α_{i,t} (serotype-year-specific baseline) + α_{i,r,t} (serotype-region-year specific baseline) + α_{i,s,t} (serotype-state-year specific baseline)
     # Final puzzle piece: OVERFIT! Allow the average serotype composition to change yearly by state but half the allowed stdev at every spatial level to avoid overfit.
@@ -315,7 +311,7 @@ with pm.Model() as dengue_model:
 
 # NUTS
 with dengue_model:
-    trace = pm.sample(200, tune=200, target_accept=0.99, chains=4, cores=4, init='auto', progressbar=True)
+    trace = pm.sample(100, tune=100, target_accept=0.99, chains=6, cores=6, init='auto', progressbar=True)
 
 # Plot posterior predictive checks
 with dengue_model:
@@ -330,9 +326,11 @@ arviz.to_netcdf(ppc, "ppc.nc")
 
 # Traceplot
 variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
-                  'alpha', 'alpha_s', 'alpha_i', 'alpha_i_sigma', 'alpha_it_sigma',
-                  'zeta_car', 'a_car', 'sigma_car', 'alpha_i_year_sigma', 'alpha_i_year'
+                  'alpha', 'alpha_s', 'alpha_i', 'alpha_i_sigma', 'alpha_it_sigma', 'rw_shrinkage',
+                    'a_car', 'sigma_car', 'alpha_i_year_sigma', 'alpha_i_year'
                 ]
+if distance_matrix:
+    variables2plot += ['zeta_car',]
 
 for var in variables2plot:
     arviz.plot_trace(trace, var_names=[var]) 
