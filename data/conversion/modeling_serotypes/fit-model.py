@@ -224,7 +224,7 @@ with pm.Model() as dengue_model:
     ## Priors for spatial correlation radius (zeta)
     if distance_matrix: 
         ### Base radius and linear slope per lag
-        zeta_intercept = pm.TruncatedNormal("zeta_intercept", mu=100, sigma=10, lower=1)
+        zeta_intercept = pm.TruncatedNormal("zeta_intercept", mu=300, sigma=10, lower=50)
         zeta_slope = pm.HalfNormal("zeta_slope", sigma=100)
         ### Construct linearly increasing radius over lags: zeta_lag = intercept + slope * lag
         lags = pt.arange(p)
@@ -275,7 +275,8 @@ with pm.Model() as dengue_model:
     epsilon = pm.Normal("epsilon", 0, 1, shape=(n_months - p, p, n_serotypes, n_states))
 
 
-    alpha_t_uncorr_sigma = pm.HalfNormal("alpha_t_uncorr_sigma", sigma=0.1, shape=n_serotypes)
+    ratio_uncorrelated = pm.HalfNormal("ratio_uncorrelated", sigma=1)
+    alpha_t_uncorr_sigma = pm.Deterministic("alpha_t_uncorr_sigma", alpha_t_sigma * ratio_uncorrelated)
     epsilon_uncorr = pm.Normal("epsilon_uncorr", mu=0, sigma=1, shape=(n_months - p, n_serotypes, n_states))
 
     def arp_step(epsilon_t, epsilon_uncorr_t, previous_vals, rho, chol_matrix_lag, alpha_t_uncorr_sigma):
@@ -362,7 +363,7 @@ arviz.to_netcdf(ppc, "ppc.nc")
 
 # Traceplot
 variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
-                  'alpha_t_sigma_shrinkage', 'alpha_t_sigma', 'a_intercept', 'a_slope', 'alpha_init',
+                  'alpha_t_sigma_shrinkage', 'alpha_t_sigma', 'a_intercept', 'a_slope', 'alpha_init', 'ratio_uncorrelated',
                 ]
 if distance_matrix:
     variables2plot += ['zeta_intercept', 'zeta_slope']
