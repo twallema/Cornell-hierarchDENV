@@ -224,7 +224,7 @@ with pm.Model() as dengue_model:
     ## Priors for spatial correlation radius (zeta)
     if distance_matrix: 
         ### Base radius and linear slope per lag
-        zeta_intercept = pm.TruncatedNormal("zeta_intercept", mu=10, sigma=10, lower=1)
+        zeta_intercept = pm.TruncatedNormal("zeta_intercept", mu=100, sigma=10, lower=1)
         zeta_slope = pm.HalfNormal("zeta_slope", sigma=100)
         ### Construct linearly increasing radius over lags: zeta_lag = intercept + slope * lag
         lags = pt.arange(p)
