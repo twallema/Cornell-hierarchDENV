@@ -19,20 +19,16 @@ pytensor.config.on_opt_error = "ignore"
 # Distance matrix
 # ~~~~~~~~~~~~~~~
 
-# Load distance matrix
-D = pd.read_csv('../../interim/weighted_distance_matrix.csv', index_col=0).values
-D_matrix = D
-# weigh with negative exponential decay model to avoid overparametrisation (internalise zeta later)
-zeta = 1000 # km
-W = np.exp(-D / zeta)
-np.fill_diagonal(W, 0)
-# Degree matrix D: diagonal of row sums of W
-D = np.diag(W.sum(axis=1))
-# Fixed alpha
-alpha_fixed = 0.5
-# Build Q
-Q = D - alpha_fixed * W
-Q += 1e-6 * np.eye(Q.shape[0])  # Numerical stabilization
+# Distance matrix
+# ~~~~~~~~~~~~~~~
+distance_matrix = False
+
+if distance_matrix == False:
+    # Load adjacency matrix
+    D = pd.read_csv('../../interim/adjacency_matrix.csv', index_col=0).values
+else:
+    # Load distance matrix
+    D = pd.read_csv('../../interim/weighted_distance_matrix.csv', index_col=0).values
 
 # Covariates
 # ~~~~~~~~~~
@@ -225,13 +221,19 @@ with pm.Model() as dengue_model:
     # # Concatenate fixed and sampled parts
     # rho = pm.Deterministic("rho", pt.concatenate([rho_first, rho_rest], axis=1))  # shape: (n_serotypes, p)
 
-    ## Priors for spatial correlation radius (zeta) 
-    ### Base radius and linear slope per lag
-    zeta_intercept = pm.TruncatedNormal("zeta_intercept", mu=10, sigma=10, lower=1)
-    zeta_slope = pm.HalfNormal("zeta_slope", sigma=100)
-    ### Construct linearly increasing radius over lags: zeta_lag = intercept + slope * lag
-    lags = pt.arange(p)
-    zeta_car = pm.Deterministic("zeta_car", zeta_intercept + zeta_slope * lags)
+    ## Priors for spatial correlation radius (zeta)
+    if distance_matrix: 
+        ### Base radius and linear slope per lag
+        zeta_intercept = pm.TruncatedNormal("zeta_intercept", mu=10, sigma=10, lower=1)
+        zeta_slope = pm.HalfNormal("zeta_slope", sigma=100)
+        ### Construct linearly increasing radius over lags: zeta_lag = intercept + slope * lag
+        lags = pt.arange(p)
+        zeta_car = pm.Deterministic("zeta_car", zeta_intercept + zeta_slope * lags)
+        ### expand to (n_serotypes, 1 , 1)
+        zeta_expanded = pt.repeat(zeta_car[None, :], n_serotypes, axis=0)[:, :, None, None] 
+    else:
+        zeta_expanded = pt.ones(shape=(n_serotypes, 1, 1))
+        pass
 
     ## Priors for spatial correlation strength (a)
     # For strength, use a decreasing linear function on log scale:
@@ -244,17 +246,15 @@ with pm.Model() as dengue_model:
     # D_shared: (n_states, n_states)
     # zeta_car: (n_serotypes, p)
     # We need to broadcast D_shared against zeta
-    D_shared = pm.MutableData("D_shared", D_matrix)
+    D_shared = pm.MutableData("D_shared", D)
     D_expanded = D_shared[None, None, :, :]
-    zeta_expanded = pt.repeat(zeta_car[None, :], n_serotypes, axis=0)[:, :, None, None]   
-    # kernel = exp(-D_shared / zeta)
     W = pt.exp(-D_expanded / zeta_expanded)
     # Construct degree tensor (matrix equivalent: row sums of weighted distance matrix on diagonal of eye(n_states))
     degree = pt.sum(W, axis=-1)[:, :, :, None]
     I = pt.eye(n_states)[None, None, :, :]
     D = I * degree
     # Q = D - a * W + jitter
-    jitter = 1e-3 * pt.diag(pt.ones(n_states))
+    jitter = 1e-6 * pt.diag(pt.ones(n_states))
     jitter = jitter[None, None, :, :]
     Q = D - a_car[None,:,None, None] * W + jitter
     # Q shape == (n_serotypes, p, n_states, n_states)
@@ -352,8 +352,10 @@ arviz.to_netcdf(ppc, "ppc.nc")
 
 # Traceplot
 variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
-                  'alpha_t_sigma_shrinkage', 'alpha_t_sigma', 'zeta_intercept', 'zeta_slope', 'a_intercept', 'a_slope', 'alpha_init',
+                  'alpha_t_sigma_shrinkage', 'alpha_t_sigma', 'a_intercept', 'a_slope', 'alpha_init',
                 ]
+if distance_matrix:
+    variables2plot += ['zeta_intercept', 'zeta_slope']
 
 for var in variables2plot:
     arviz.plot_trace(trace, var_names=[var]) 
