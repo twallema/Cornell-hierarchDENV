@@ -229,16 +229,16 @@ with pm.Model() as dengue_model:
         ### Construct linearly increasing radius over lags: zeta_lag = intercept + slope * lag
         lags = pt.arange(p)
         zeta_car = pm.Deterministic("zeta_car", zeta_intercept + zeta_slope * lags)
-        ### expand to (n_serotypes, 1 , 1)
+        ### expand to (n_serotypes, p , 1)
         zeta_expanded = pt.repeat(zeta_car[None, :], n_serotypes, axis=0)[:, :, None, None] 
     else:
-        zeta_expanded = pt.ones(shape=(n_serotypes, 1, 1))
+        zeta_expanded = -1 * pt.ones(shape=(n_serotypes, p, 1, 1))
         pass
 
     ## Priors for spatial correlation strength (a)
     # For strength, use a decreasing linear function on log scale:
     a_intercept = pm.Normal("a_intercept", mu=4.5, sigma=0.5)
-    a_slope = pm.Normal("a_slope", mu=-1.5, sigma=0.1)          # Values 3 --> -3 corespond to a going from a=0.95 --> a=0.05
+    a_slope = pm.Normal("a_slope", mu=-1.5, sigma=0.5)          # Values 3 --> -3 corespond to a going from a=0.95 --> a=0.05
     log_a = a_intercept + a_slope * pt.arange(p)
     a_car = pm.Deterministic("a_car", pm.math.sigmoid(log_a))  
 
