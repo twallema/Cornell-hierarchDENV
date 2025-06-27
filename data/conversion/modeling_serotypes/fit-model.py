@@ -141,6 +141,22 @@ state_year_to_region_year = df.groupby("state_year_idx")["region_year_idx"].firs
 ## Preparing the model##
 ########################
 
+def critical_rho1(p):
+    """Compute the max allowed rho_1 for a harmonic AR(p) to be on the edge of stationarity"""
+    return 1 / np.sum(1 / np.arange(1, p + 1))
+
+def beta_params_from_mean_variance(mu, var):
+    """Compute alpha, beta for a Beta distribution with given mean and variance"""
+    tmp = mu * (1 - mu) / var - 1
+    alpha = mu * tmp
+    beta = (1 - mu) * tmp
+    return alpha, beta
+
+def weak_beta_prior(critical_value, margin=0.05, strength=0.01):
+    """Construct a weak Beta prior with given mean and large variance"""
+    var = strength * (1-margin)*critical_value * (1 - (1-margin)*critical_value)
+    return beta_params_from_mean_variance((1-margin)*critical_value, var)
+
 with pm.Model() as dengue_model:
 
     # --- Typing Effort Model ---
@@ -195,33 +211,18 @@ with pm.Model() as dengue_model:
     # log 𝜃_{i,s,t} = 𝛼 + 𝛼_s + 𝛼_t + 𝛼_i + 𝛼_{i,t} + 𝛼_{s,i}    
 
     # Try to combine an AR(p) with a CAR prior on every timestep in the past
-    ## priors for autogregression coefficients and overall noise are serotype-specific
-    p = 2
 
     ## Regularisation of the overall noise
     alpha_t_sigma_shrinkage = pm.HalfNormal("alpha_t_sigma_shrinkage", sigma=0.10)
     alpha_t_sigma = pm.HalfNormal("alpha_t_sigma", sigma=alpha_t_sigma_shrinkage, shape=n_serotypes)
 
     ## Temporal correlation structure: Decaying weights rho_k = 1/(k**gamma_i) --> identifiable but I think this is too strict
+    p = 2
+    a,b = weak_beta_prior(critical_rho1(p))
     gamma = pt.ones(n_serotypes)
-    first_lag = pm.Beta("first_lag", alpha=2, beta=1)
+    first_lag = pm.Beta("first_lag", alpha=a, beta=b)
     decay_mean = first_lag / ((np.arange(1, p + 1)[None,:])**gamma[:,None])
     rho = pm.Deterministic("rho", decay_mean)
-
-    # ## Temporal correlation structure: Decaying weights rho_k ~ Beta() with mean = 1/(k**gamma_i) and hierarchical concentration parameter per serotype --> should be more loose
-    # # Fix first lag to one as an anchor
-    # rho_first = pt.ones((n_serotypes, 1))
-    # # But allow great flexibility in remaining lags: rho[:, 1:] ~ Beta(mean = 1/k^γ, conc = flexible)
-    # gamma = pm.TruncatedNormal("gamma", mu=1.0, sigma=0.1, lower=0, shape=n_serotypes)
-    # decay_mean = 1.0 / (np.arange(2, p + 1)[None, :] ** gamma[:, None])  # shape: (n_serotypes, p-1)
-    # # Hierarchical concentration to control variability
-    # log_concentration = pm.Normal("log_concentration", mu=4, sigma=0.5, shape=n_serotypes)
-    # concentration = pm.Deterministic("concentration", pt.exp(log_concentration))
-    # alpha = decay_mean * concentration[:, None]
-    # beta = (1 - decay_mean) * concentration[:, None]
-    # rho_rest = pm.Beta("rho_rest", alpha=alpha, beta=beta, shape=(n_serotypes, p - 1))
-    # # Concatenate fixed and sampled parts
-    # rho = pm.Deterministic("rho", pt.concatenate([rho_first, rho_rest], axis=1))  # shape: (n_serotypes, p)
 
     ## Priors for spatial correlation radius (zeta)
     if distance_matrix: 
