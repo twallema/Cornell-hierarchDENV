@@ -214,11 +214,13 @@ with pm.Model() as dengue_model:
     # Try to combine an AR(p) with a CAR prior on every timestep in the past
 
     ## Regularisation of the spatially correlated innovation noise and coupling with the spatially uncorrelated innovation noise
-    corr_sigma_shrinkage = pm.HalfNormal("corr_sigma_shrinkage", sigma=0.10)
-    corr_sigma = pm.HalfNormal("corr_sigma", sigma=corr_sigma_shrinkage, shape=n_serotypes)
-    ratio_uncorrelated = pm.HalfNormal("ratio_uncorrelated", sigma=1)
-    uncorr_sigma = pm.Deterministic("uncorr_sigma", ratio_uncorrelated * corr_sigma)
-    
+    total_sigma_shrinkage = pm.HalfNormal("total_sigma_shrinkage", sigma=0.10)
+    total_sigma = pm.HalfNormal("total_sigma", sigma=total_sigma_shrinkage, shape=n_serotypes)
+    proportion_uncorr = pm.Beta("proportion_uncorr", alpha=1, beta=2)  # proportion of noise that is unstructured (encourages structured noise)
+    uncorr_sigma = pm.Deterministic("uncorr_sigma", proportion_uncorr * total_sigma)
+    corr_sigma = pm.Deterministic("corr_sigma", (1 - proportion_uncorr) * total_sigma)
+
+
     ## Temporal correlation structure: Decaying weights rho_k = first_lag/(k**gamma_i) --> rule-of-thumb for monotonically decreasing coefficients: edge of stationarity if sum(rho_k) \approx 1
     p = 2
     a,b = weak_beta_prior(critical_rho1(p))
@@ -359,7 +361,7 @@ arviz.to_netcdf(ppc, "ppc.nc")
 
 # Traceplot
 variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
-                  'corr_sigma_shrinkage', 'corr_sigma', 'ratio_uncorrelated', 'first_lag', 'a_intercept', 'a_slope', 'AR_init',
+                  'total_sigma_shrinkage', 'total_sigma', 'proportion_uncorr', 'first_lag', 'a_intercept', 'a_slope', 'AR_init',
                 ]
 if distance_matrix:
     variables2plot += ['zeta_intercept', 'zeta_slope']
