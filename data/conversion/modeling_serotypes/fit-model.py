@@ -68,7 +68,7 @@ assert all(col in df.columns for col in required_cols)
 # 2. Sort for safety
 df = df.sort_values(["date", "UF"]).reset_index(drop=True)
 
-df = df[df['date'] > datetime(1999,1,1)]
+df = df[df['date'] > datetime(2000,1,1)]
 
 # 3. Factorize states and time
 df["state_idx"], _ = pd.factorize(df["UF"])
@@ -152,7 +152,7 @@ def beta_params_from_mean_variance(mu, var):
     beta = (1 - mu) * tmp
     return alpha, beta
 
-def weak_beta_prior(critical_value, margin=0.05, strength=0.01):
+def weak_beta_prior(critical_value, margin=0, strength=0.01):
     """Construct a weak Beta prior with given mean and large variance"""
     var = strength * (1-margin)*critical_value * (1 - (1-margin)*critical_value)
     return beta_params_from_mean_variance((1-margin)*critical_value, var)
@@ -213,17 +213,19 @@ with pm.Model() as dengue_model:
     # Try to combine an AR(p) with a CAR prior on every timestep in the past
     p = 2
 
-    ## Regularisation of the overall noise
-    corr_sigma_shrinkage = pm.HalfNormal("corr_sigma_shrinkage", sigma=0.10)
-    corr_sigma = pm.HalfNormal("corr_sigma", sigma=corr_sigma_shrinkage, shape=n_serotypes)
-    ratio_uncorrelated = pm.TruncatedNormal("ratio_uncorrelated", mu=1, sigma=0.25, lower=0)
-    uncorr_sigma = pm.Deterministic("uncorr_sigma", ratio_uncorrelated * corr_sigma)
+    ## Regularisation of the overall noise & split between spatially structured and unstructured noise
+    total_sigma_shrinkage = pm.HalfNormal("total_sigma_shrinkage", sigma=0.10)
+    total_sigma = pm.HalfNormal("total_sigma", sigma=total_sigma_shrinkage, shape=n_serotypes)
+    proportion_uncorr = pm.Beta("proportion_uncorr", alpha=1, beta=2)  # proportion of noise that is unstructured (encourages structured noise)
+    uncorr_sigma = pm.Deterministic("uncorr_sigma", proportion_uncorr * total_sigma)
+    corr_sigma = pm.Deterministic("corr_sigma", (1 - proportion_uncorr) * total_sigma)
 
     ## Temporal correlation structure: Decaying weights rho_k = 1/(k**gamma_i) --> identifiable but I think this is too strict
     a,b = weak_beta_prior(critical_rho1(p))
     gamma = pt.ones(n_serotypes)
     first_lag = pm.Beta("first_lag", alpha=a, beta=b)
     decay_mean = first_lag / ((np.arange(1, p + 1)[None,:])**gamma[:,None])
+    AR_coefficients_sum = pm.Deterministic("AR_coefficients_sum", pt.sum(decay_mean, axis=1))
     rho = pm.Deterministic("rho", decay_mean)
 
     ## Priors for spatial correlation radius (zeta)
@@ -235,7 +237,7 @@ with pm.Model() as dengue_model:
 
     ## Priors for spatial correlation strength (a)
     # For strength, use a decreasing linear function on log scale:
-    log_a = pm.Normal("log_a", mu=4.5, sigma=0.5)
+    log_a = pm.Normal("log_a", mu=3, sigma=1)
     a_car = pm.Deterministic("a_car", pm.math.sigmoid(log_a))  
 
     # Pair-wise kernel first
@@ -262,7 +264,7 @@ with pm.Model() as dengue_model:
     chol = chol * corr_sigma[:, None, None]  # broadcast over p and states
 
     # Initialise AR(p) initial condition
-    AR_init = pm.Normal("AR_init", mu=0, sigma=1, shape=(p, n_serotypes, n_states))
+    AR_init = pm.Normal("AR_init", mu=0, sigma=0.10, shape=(p, n_serotypes, n_states))
 
     # Initialise spatial innovation noise (one per lag)
     epsilon_corr = pm.Normal("epsilon_corr", 0, 1, shape=(n_months - p, n_serotypes, n_states))
@@ -333,7 +335,7 @@ with pm.Model() as dengue_model:
 
 # NUTS
 with dengue_model:
-    trace = pm.sample(50, tune=50, target_accept=0.999, chains=6, cores=6, init='auto', progressbar=True)
+    trace = pm.sample(50, tune=100, target_accept=0.999, chains=4, cores=4, init='adapt_diag', progressbar=True)
 
 # Plot posterior predictive checks
 with dengue_model:
@@ -349,7 +351,7 @@ arviz.to_netcdf(ppc, "ppc.nc")
 
 # Traceplot
 variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
-                  'corr_sigma_shrinkage', 'corr_sigma', 'log_a', 'AR_init', 'ratio_uncorrelated', 'first_lag',
+                  'total_sigma_shrinkage', 'total_sigma', 'proportion_uncorr', 'log_a', 'AR_init', 'first_lag', 'AR_coefficients_sum'
                 ]
 if distance_matrix:
     variables2plot += ['zeta',]
