@@ -332,6 +332,178 @@ else:
     ## Model 2: one spatially correlated innovation (CAR) ##
     ########################################################
 
+    with pm.Model() as model:
+
+        # --- Typing Effort Model ---
+        # (original plan)
+        # N^*_{s,t} ~ Binomial(N_{total,s,t}, \delta_{s,t}),
+        # where N_{total,s,t} the observed total dengue incidence and \delta_{s,t} the fraction that gets subtyped.
+        #
+        # 𝛿_{s,t} ~ 𝐵𝑒𝑡𝑎(𝜇_{s,t}.𝜙, (1 − 𝜇_{s,t}).𝜙)
+        # logit(𝜇_{s,t}) = \beta + \beta_s + \beta_t + \sum_j \beta_j X_{s,j}
+
+        # \beta (global intercept)
+        beta = pm.Normal("beta", mu=-4.5, sigma=1.5)
+
+        # \beta_{s,t}: State-year-specific typing effort random effect: \beta_{s,t} = \beta_{r[s],t} + \epsilon_{s,t}
+        # Region-year effect
+        beta_rt_shrinkage = pm.Exponential("beta_rt_shrinkage", 1)
+        beta_rt_sigma = pm.HalfNormal("beta_rt_sigma", sigma=beta_rt_shrinkage, shape=n_region_years)
+        beta_rt = pm.Normal("beta_rt", mu=0.0, sigma=beta_rt_sigma, shape=n_region_years)
+        # State-year deviation from region-year
+        eps_st_sigma = pm.Deterministic("eps_st_sigma", beta_rt_sigma[state_year_to_region_year]/2)
+        eps_st = pm.Normal("eps_st", mu=0.0, sigma=eps_st_sigma, shape=n_state_years)
+        # Final state-year effect
+        beta_st = pm.Deterministic("beta_st", beta_rt[region_year_idx] + eps_st[state_year_idx])
+
+        # # 𝛿_{s,t} ~ 𝐵𝑒𝑡𝑎(𝜇_{s,t}.𝜙, (1 − 𝜇_{s,t}).𝜙)
+        # # logit(𝜇_{s,t})
+        # mu = pm.Deterministic("mu", pm.math.sigmoid(beta + beta_st))
+        # phi = pm.HalfNormal("phi", sigma=5.0)
+        # alpha_beta = mu * phi
+        # beta_beta = (1 - mu) * phi
+        # delta_st = pm.Beta("delta_st", alpha=alpha_beta, beta=beta_beta, observed=delta_obs)
+        # Alternative: model serotyped fraction as a logit-normal since beta is close to zero
+        logit_delta_obs = np.log(delta_obs / (1 - delta_obs)) 
+        logit_mu = beta  + beta_st
+        # logit_delta_sigma is important because it controls the overall noise levels on the serotyped cases (lower = less noise)
+        # it also controls an important trade-off in this model: the relationship between N_total and N_typed is not perfectly linear, i.e. you can't fit both N_total and delta_st perfectly
+        # Values of 0.001-0.002 sacrifices delta_st for a better fit to N_total, while a value of 0.001 gives a good fit to delta_st but a poorer fit to N_typed an too much uncertainty
+        # Opposed
+        logit_delta_sigma = pm.HalfNormal("logit_delta_sigma", sigma=0.002) 
+        logit_delta = pm.Normal("logit_delta", mu=logit_mu, sigma=logit_delta_sigma, observed=logit_delta_obs)
+        delta_st = pm.Deterministic("delta_st", pm.math.sigmoid(logit_delta))
+
+        # N^*_{s,t} ~ Binomial(N_{total,s,t}, \delta_{s,t})
+        N_typed_latent = pm.Binomial("N_typed_latent", n=N_total, p=delta_st, observed=N_typed)
+
+        # N^*_{s,t} ~ Poisson(N_{total,s,t} * \delta_{s,t}) --> Less brutal likelihood than Binomial
+        #lambda_ = pm.Deterministic("lambda_", N_total * delta_st)
+        #N_typed_latent = pm.Poisson("N_typed_latent", mu=lambda_, observed=N_typed)
+
+        # --- Subtype Composition Model ---
+        # p_{i,s,t} ~ Dirichlet(\theta_{i,s,t})
+        # log 𝜃_{i,s,t} = 𝛼 + 𝛼_s + 𝛼_t + 𝛼_i + 𝛼_{i,t} + 𝛼_{s,i}    
+
+        # Try to combine an AR(p) with a CAR prior on every timestep in the past
+        p = 2
+
+        ## Regularisation of the overall noise & split between spatially structured and unstructured noise
+        total_sigma_shrinkage = pm.HalfNormal("total_sigma_shrinkage", sigma=0.2)
+        total_sigma = pm.HalfNormal("total_sigma", sigma=total_sigma_shrinkage, shape=n_serotypes)
+        proportion_uncorr = pm.Beta("proportion_uncorr", alpha=1, beta=2)  # proportion of noise that is unstructured (encourages structured noise)
+        uncorr_sigma = pm.Deterministic("uncorr_sigma", proportion_uncorr * total_sigma)
+        corr_sigma = pm.Deterministic("corr_sigma", (1 - proportion_uncorr) * total_sigma)
+
+        ## Temporal correlation structure: Decaying weights rho_k = 1/(k**gamma_i) --> identifiable but I think this is too strict
+        #a,b = weak_beta_prior(critical_rho1(p,gamma))
+        gamma = pm.TruncatedNormal("gamma", mu=1, sigma=0.25, lower=0, shape=n_serotypes)
+        first_lag = pm.Deterministic("first_lag", critical_rho1(p,gamma))
+        rho = pm.Deterministic("rho", first_lag[:,None] / ((np.arange(1, p + 1)[None,:])**gamma[:,None]))
+        AR_coefficients_sum = pm.Deterministic("AR_coefficients_sum", pt.sum(rho, axis=1))
+
+        ## Priors for spatial correlation radius (zeta)
+        if distance_matrix: 
+            zeta = pm.HalfNormal("zeta", sigma=300)
+        else:
+            zeta = -1
+            pass
+
+        ## Priors for spatial correlation strength (a)
+        # For strength, use a decreasing linear function on log scale:
+        log_a = pm.Normal("log_a", mu=3, sigma=1)
+        a_car = pm.Deterministic("a_car", pm.math.sigmoid(log_a))  
+
+        # Pair-wise kernel first
+        # D_shared: (n_states, n_states)
+        # zeta_car: (n_serotypes, p)
+        # We need to broadcast D_shared against zeta
+        D_shared = pm.MutableData("D_shared", D)
+        D_expanded = D_shared[None, :, :]
+        W = pt.exp(-D_expanded / zeta)
+        # Construct degree tensor (matrix equivalent: row sums of weighted distance matrix on diagonal of eye(n_states))
+        degree = pt.sum(W, axis=-1)[:, :, None]
+        I = pt.eye(n_states)[None, :, :]
+        D = I * degree
+        # Q = D - a * W + jitter
+        jitter = 1e-6 * pt.diag(pt.ones(n_states))
+        jitter = jitter[None, :, :]
+        Q = D - a_car * W + jitter
+        # Q shape == (n_serotypes, p, n_states, n_states)
+
+        # Compute the Cholesky of Q
+        chol = pt.slinalg.cholesky(Q)
+
+        # Scale with the noise
+        chol = chol * corr_sigma[:, None, None]  # broadcast over p and states
+
+        # Initialise AR(p) initial condition
+        AR_init = pm.Normal("AR_init", mu=0, sigma=1, shape=(p, n_serotypes, n_states))
+
+        # Initialise spatial innovation noise (one per lag)
+        epsilon_corr = pm.Normal("epsilon_corr", 0, 1, shape=(n_months - p, n_serotypes, n_states))
+
+        # Initialise random noise
+        epsilon_uncorr = pm.Normal("epsilon_uncorr", mu=0, sigma=1, shape=(n_months - p, n_serotypes, n_states))
+
+
+        def arp_step(epsilon_corr_t, epsilon_uncorr_t, previous_vals, rho, chol, uncorr_sigma):
+            """
+            previous_vals: (p, n_serotypes, n_states)
+            epsilon_t: (n_serotypes, n_states)
+            epsilon_uncorr_t: (n_serotypes, n_states)
+            """
+
+            spatial_noise = pt.batched_dot(epsilon_corr_t, chol)
+            AR_noise = epsilon_uncorr_t * uncorr_sigma[:, None]
+            AR_mean = []
+            for lag in range(p):
+                # Apply temporal weight rho_k (serotype-specific)
+                AR_mean.append(rho[:, lag][:, None] * previous_vals[lag])
+
+            # Sum weighted AR and spatial noise over lags
+            new_vals = sum(AR_mean) + spatial_noise + AR_noise  # (n_serotypes, n_states)
+
+            # Shift lag window: insert new_vals at position 0
+            updated_vals = pt.concatenate(
+                [new_vals[None, :, :], previous_vals[:-1]], axis=0
+            )  # (p, n_serotypes, n_states)
+
+            return updated_vals
+        
+        sequences, _ = pytensor.scan(
+            fn=arp_step,
+            sequences=[epsilon_corr, epsilon_uncorr],
+            outputs_info=AR_init,
+            non_sequences=[rho, chol, uncorr_sigma],
+        )
+
+
+        # sequences: (n_months - p, p, n_serotypes, n_states)
+        # AR_init: (p, n_serotypes, n_states)
+        theta_log_final = pt.concatenate([pt.repeat(AR_init[None, :, :, :], p, axis=0), sequences], axis=0)
+        # Step 3: slice lag zero (p=0) over full time axis
+        theta_log_final = theta_log_final[:, 0, :, :]  # shape (n_months, n_serotypes, n_states)
+        # Step 4: convert to flat format
+        theta_log_final_flat = theta_log_final.reshape((len(df), n_serotypes))
+
+        # Construct log θ_{i,s,t}
+        theta_log = (
+            theta_log_final_flat
+        )  # Result: shape (n_obs, 4)
+        
+        # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+    
+        # Dirichlet prior for subtype fractions
+        p = pm.Deterministic("p", pm.math.softmax(theta_log, axis=1))
+
+        # --- Observed subtyped incidences ---
+        # Y_{i,s,t} ~ Multinomial(N^*_{s,t}, p_{i,s,t})
+
+        Y_obs = pm.Multinomial("Y_obs", n=N_typed_latent, p=p, observed=Y_multinomial)
+
+
+
 ########################
 ## Running the model  ##
 ########################
@@ -371,7 +543,6 @@ for var in variables2plot:
     arviz.plot_trace(trace, var_names=[var]) 
     plt.savefig(f'trace-{var}_typing-effort-model.pdf')
     plt.close()
-
 
 # Print summary
 summary_df = arviz.summary(trace, round_to=3)
