@@ -260,7 +260,7 @@ with pm.Model() as dengue_model:
     chol = chol * alpha_t_sigma[:, None, None]  # broadcast over p and states
 
     # initialise initial condition
-    alpha_init = pm.Normal("alpha_init", mu=0, sigma=1, shape=(p, n_serotypes, n_states))
+    AR_init = pm.Normal("AR_init", mu=0, sigma=1, shape=(p, n_serotypes, n_states))
 
     # --- FIX: epsilon now includes innovations for each lag at each timestep ---
     epsilon = pm.Normal("epsilon", 0, 1, shape=(n_months - p, n_serotypes, n_states))
@@ -297,14 +297,14 @@ with pm.Model() as dengue_model:
     sequences, _ = pytensor.scan(
         fn=arp_step,
         sequences=[epsilon, epsilon_uncorr],
-        outputs_info=alpha_init,
+        outputs_info=AR_init,
         non_sequences=[rho, chol, alpha_t_uncorr_sigma],
     )
 
 
     # sequences: (n_months - p, p, n_serotypes, n_states)
-    # alpha_init: (p, n_serotypes, n_states)
-    theta_log_final = pt.concatenate([pt.repeat(alpha_init[None, :, :, :], p, axis=0), sequences], axis=0)
+    # AR_init: (p, n_serotypes, n_states)
+    theta_log_final = pt.concatenate([pt.repeat(AR_init[None, :, :, :], p, axis=0), sequences], axis=0)
     # Step 3: slice lag zero (p=0) over full time axis
     theta_log_final = theta_log_final[:, 0, :, :]  # shape (n_months, n_serotypes, n_states)
     # Step 4: convert to flat format
@@ -348,7 +348,7 @@ arviz.to_netcdf(ppc, "ppc.nc")
 
 # Traceplot
 variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
-                  'alpha_t_sigma_shrinkage', 'alpha_t_sigma', 'log_a', 'alpha_init', 'ratio_uncorrelated', 'first_lag',
+                  'alpha_t_sigma_shrinkage', 'alpha_t_sigma', 'log_a', 'AR_init', 'ratio_uncorrelated', 'first_lag',
                 ]
 if distance_matrix:
     variables2plot += ['zeta',]
