@@ -212,22 +212,21 @@ with pm.Model() as dengue_model:
     # log 𝜃_{i,s,t} = 𝛼 + 𝛼_s + 𝛼_t + 𝛼_i + 𝛼_{i,t} + 𝛼_{s,i}    
 
     # Try to combine an AR(p) with a CAR prior on every timestep in the past
+    p=2
 
-    ## Regularisation of the spatially correlated innovation noise and coupling with the spatially uncorrelated innovation noise
-    total_sigma_shrinkage = pm.HalfNormal("total_sigma_shrinkage", sigma=0.10)
+    ## Regularisation of the overall noise & split between spatially structured and unstructured noise
+    total_sigma_shrinkage = pm.HalfNormal("total_sigma_shrinkage", sigma=0.2)
     total_sigma = pm.HalfNormal("total_sigma", sigma=total_sigma_shrinkage, shape=n_serotypes)
     proportion_uncorr = pm.Beta("proportion_uncorr", alpha=1, beta=2)  # proportion of noise that is unstructured (encourages structured noise)
     uncorr_sigma = pm.Deterministic("uncorr_sigma", proportion_uncorr * total_sigma)
     corr_sigma = pm.Deterministic("corr_sigma", (1 - proportion_uncorr) * total_sigma)
 
-    ## Temporal correlation structure: Decaying weights rho_k = first_lag/(k**gamma_i) --> rule-of-thumb for monotonically decreasing coefficients: edge of stationarity if sum(rho_k) \approx 1
-    p = 2
-    a,b = weak_beta_prior(critical_rho1(p))
-    gamma = pt.ones(n_serotypes)
-    first_lag = pm.Beta("first_lag", alpha=a, beta=b)
-    decay_mean = first_lag / ((np.arange(1, p + 1)[None,:])**gamma[:,None])
-    AR_coefficients_sum = pm.Deterministic("AR_coefficients_sum", pt.sum(decay_mean, axis=1))
-    rho = pm.Deterministic("rho", decay_mean)
+    ## Temporal correlation structure: Decaying weights rho_k = 1/(k**gamma_i) --> identifiable but I think this is too strict
+    #a,b = weak_beta_prior(critical_rho1(p,gamma))
+    gamma = pm.TruncatedNormal("gamma", mu=1, sigma=0.25, lower=0, shape=n_serotypes)
+    first_lag = pm.Deterministic("first_lag", critical_rho1(p,gamma))
+    rho = pm.Deterministic("rho", first_lag[:,None] / ((np.arange(1, p + 1)[None,:])**gamma[:,None]))
+    AR_coefficients_sum = pm.Deterministic("AR_coefficients_sum", pt.sum(rho, axis=1))
 
     ## Priors for spatial correlation radius (zeta)
     if distance_matrix: 
@@ -245,7 +244,7 @@ with pm.Model() as dengue_model:
 
     ## Priors for spatial correlation strength (a)
     # For strength, use a decreasing linear function on log scale:
-    a_intercept = pm.Normal("a_intercept", mu=4.5, sigma=0.5)
+    a_intercept = pm.Normal("a_intercept", mu=3.0, sigma=1.0)
     a_slope = pm.Normal("a_slope", mu=-1.0, sigma=0.5)          # Values 3 --> -3 corespond to a going from a=0.95 --> a=0.05
     log_a = a_intercept + a_slope * pt.arange(p)
     a_car = pm.Deterministic("a_car", pm.math.sigmoid(log_a))  
@@ -361,7 +360,7 @@ arviz.to_netcdf(ppc, "ppc.nc")
 
 # Traceplot
 variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
-                  'total_sigma_shrinkage', 'total_sigma', 'proportion_uncorr', 'first_lag', 'AR_coefficients_sum', 'a_intercept', 'a_slope', 'AR_init',
+                  'total_sigma_shrinkage', 'total_sigma', 'proportion_uncorr', 'gamma', 'a_intercept', 'a_slope', 'AR_init',
                 ]
 if distance_matrix:
     variables2plot += ['zeta_intercept', 'zeta_slope']
