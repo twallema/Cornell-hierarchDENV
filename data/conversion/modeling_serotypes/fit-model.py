@@ -1,4 +1,6 @@
+import os
 import arviz
+import argparse
 import pymc as pm
 import numpy as np
 import pandas as pd
@@ -10,8 +12,33 @@ import pytensor.tensor as pt
 pytensor.config.cxx = '/usr/bin/clang++'
 pytensor.config.on_opt_error = "ignore"
 
-distance_matrix = False     # distance versus adjacency matrix
-CAR_per_lag = True          # one spatial innovation process per AR lag
+# helper function for argument parsing
+def str_to_bool(value):
+    """Convert string arguments to boolean (for SLURM environment variables)."""
+    return value.lower() in ["true", "1", "yes"]
+
+# arguments determine the model + data combo used to forecast
+# How to run: python fit-model.py -ID test -p 2 -distance_matrix False -CAR_per_lag False
+parser = argparse.ArgumentParser()
+parser.add_argument("-chains", type=int, help="Number of parallel chains.", default=3)
+parser.add_argument("-ID", type=str, help="Sampler output name.")
+parser.add_argument("-p", type=int, help="Order of AR(p) process.")
+parser.add_argument("-distance_matrix", type=str_to_bool, help="Use distance matrix versus adjacency matrix.")
+parser.add_argument("-CAR_per_lag", type=str_to_bool, help="Use one spatial innovation process per AR lag versus one spatial innovation overall.")
+args = parser.parse_args()
+
+# assign to desired variables
+chains = args.chains
+ID = args.ID
+p = args.p
+distance_matrix = args.distance_matrix
+CAR_per_lag = args.CAR_per_lag
+
+# Make folder structure
+output_folder=f'AR({p})/distance_matrix-{distance_matrix}/CARperlag-{CAR_per_lag}/{ID}_{datetime.today().strftime("%Y-%m-%d")}' # Path to backend
+# check if samples folder exists, if not, make it
+if not os.path.exists(output_folder):
+    os.makedirs(output_folder)
 
 ########################
 ## Preparing the data ##
@@ -201,8 +228,6 @@ if CAR_per_lag:
         # log 𝜃_{i,s,t} = 𝛼 + 𝛼_s + 𝛼_t + 𝛼_i + 𝛼_{i,t} + 𝛼_{s,i}    
 
         # Try to combine an AR(p) with a CAR prior on every timestep in the past
-        p=2
-
         ## Regularisation of the overall noise & split between spatially structured and unstructured noise
         total_sigma_shrinkage = pm.HalfNormal("total_sigma_shrinkage", sigma=0.2)
         total_sigma = pm.HalfNormal("total_sigma", sigma=total_sigma_shrinkage, shape=n_serotypes)
@@ -510,19 +535,19 @@ else:
 
 # NUTS
 with model:
-    trace = pm.sample(100, tune=100, target_accept=0.999, chains=4, cores=4, init='adapt_diag', progressbar=True)
+    trace = pm.sample(100, tune=200, target_accept=0.999, chains=chains, cores=chains, init='adapt_diag', progressbar=True)
 
 # Plot posterior predictive checks
 with model:
     ppc = pm.sample_posterior_predictive(trace)
 arviz.plot_ppc(ppc)
-plt.savefig('ppc.pdf')
+plt.savefig(f'{output_folder}/ppc.pdf')
 plt.close()
 
 
 # Assume `trace` is the result of pm.sample()
-arviz.to_netcdf(trace, "trace.nc")
-arviz.to_netcdf(ppc, "ppc.nc")
+arviz.to_netcdf(trace, f"{output_folder}/trace.nc")
+arviz.to_netcdf(ppc, f"{output_folder}/ppc.nc")
 
 # Traceplot
 if CAR_per_lag:
@@ -541,7 +566,7 @@ else:
 
 for var in variables2plot:
     arviz.plot_trace(trace, var_names=[var]) 
-    plt.savefig(f'trace-{var}_typing-effort-model.pdf')
+    plt.savefig(f'{output_folder}/trace-{var}_typing-effort-model.pdf')
     plt.close()
 
 # Print summary
