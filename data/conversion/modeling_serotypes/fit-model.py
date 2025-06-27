@@ -10,19 +10,15 @@ import pytensor.tensor as pt
 pytensor.config.cxx = '/usr/bin/clang++'
 pytensor.config.on_opt_error = "ignore"
 
+distance_matrix = False     # distance versus adjacency matrix
+CAR_per_lag = True          # one spatial innovation process per AR lag
 
 ########################
 ## Preparing the data ##
 ########################
 
-
 # Distance matrix
 # ~~~~~~~~~~~~~~~
-
-# Distance matrix
-# ~~~~~~~~~~~~~~~
-
-distance_matrix = False
 
 if distance_matrix == False:
     # Load adjacency matrix
