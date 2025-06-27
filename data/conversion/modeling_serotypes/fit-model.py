@@ -229,7 +229,7 @@ if CAR_per_lag:
 
         # Try to combine an AR(p) with a CAR prior on every timestep in the past
         ## Regularisation of the overall noise & split between spatially structured and unstructured noise
-        total_sigma_shrinkage = pm.HalfNormal("total_sigma_shrinkage", sigma=0.2)
+        total_sigma_shrinkage = pm.HalfNormal("total_sigma_shrinkage", sigma=0.25)
         total_sigma = pm.HalfNormal("total_sigma", sigma=total_sigma_shrinkage, shape=n_serotypes)
         proportion_uncorr = pm.Beta("proportion_uncorr", alpha=1, beta=2)  # proportion of noise that is unstructured (encourages structured noise)
         uncorr_sigma = pm.Deterministic("uncorr_sigma", proportion_uncorr * total_sigma)
@@ -410,11 +410,8 @@ else:
         # p_{i,s,t} ~ Dirichlet(\theta_{i,s,t})
         # log 𝜃_{i,s,t} = 𝛼 + 𝛼_s + 𝛼_t + 𝛼_i + 𝛼_{i,t} + 𝛼_{s,i}    
 
-        # Try to combine an AR(p) with a CAR prior on every timestep in the past
-        p = 2
-
         ## Regularisation of the overall noise & split between spatially structured and unstructured noise
-        total_sigma_shrinkage = pm.HalfNormal("total_sigma_shrinkage", sigma=0.2)
+        total_sigma_shrinkage = pm.HalfNormal("total_sigma_shrinkage", sigma=0.25)
         total_sigma = pm.HalfNormal("total_sigma", sigma=total_sigma_shrinkage, shape=n_serotypes)
         proportion_uncorr = pm.Beta("proportion_uncorr", alpha=1, beta=2)  # proportion of noise that is unstructured (encourages structured noise)
         uncorr_sigma = pm.Deterministic("uncorr_sigma", proportion_uncorr * total_sigma)
@@ -535,7 +532,7 @@ else:
 
 # NUTS
 with model:
-    trace = pm.sample(100, tune=200, target_accept=0.999, chains=chains, cores=chains, init='adapt_diag', progressbar=True)
+    trace = pm.sample(500, tune=500, target_accept=0.999, chains=chains, cores=chains, init='adapt_diag', progressbar=True)
 
 # Plot posterior predictive checks
 with model:
