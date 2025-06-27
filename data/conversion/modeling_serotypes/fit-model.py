@@ -141,22 +141,9 @@ state_year_to_region_year = df.groupby("state_year_idx")["region_year_idx"].firs
 ## Preparing the model##
 ########################
 
-def critical_rho1(p):
-    """Compute the max allowed rho_1 for a harmonic AR(p) to be on the edge of stationarity"""
-    return 1 / np.sum(1 / np.arange(1, p + 1))
-
-def beta_params_from_mean_variance(mu, var):
-    """Compute alpha, beta for a Beta distribution with given mean and variance"""
-    tmp = mu * (1 - mu) / var - 1
-    alpha = mu * tmp
-    beta = (1 - mu) * tmp
-    return alpha, beta
-
-def weak_beta_prior(critical_value, margin=0.05, strength=0.01):
-    """Construct a weak Beta prior with given mean and large variance"""
-    var = strength * (1-margin)*critical_value * (1 - (1-margin)*critical_value)
-    return beta_params_from_mean_variance((1-margin)*critical_value, var)
-
+def critical_rho1(p, gamma):
+    """Compute the coefficient of the first lag so that the sum of p AR coefficients: rho_k = 1/k**gamma sum to zero; resulting in a non-stationary process"""
+    return 1 / pt.sum(1 / np.arange(1, p + 1)[None,:]**gamma[:,None], axis=1)
 
 with pm.Model() as dengue_model:
 
@@ -344,7 +331,7 @@ with pm.Model() as dengue_model:
 
 # NUTS
 with dengue_model:
-    trace = pm.sample(200, tune=200, target_accept=0.999, chains=6, cores=6, init='auto', progressbar=True)
+    trace = pm.sample(100, tune=100, target_accept=0.999, chains=4, cores=4, init='adapt_diag', progressbar=True)
 
 # Plot posterior predictive checks
 with dengue_model:
