@@ -220,7 +220,7 @@ with pm.Model() as dengue_model:
     uncorr_sigma = pm.Deterministic("uncorr_sigma", ratio_uncorrelated * corr_sigma)
     
     ## Temporal correlation structure: Decaying weights rho_k = first_lag/(k**gamma_i) --> rule-of-thumb for monotonically decreasing coefficients: edge of stationarity if sum(rho_k) \approx 1
-    p = 12
+    p = 2
     a,b = weak_beta_prior(critical_rho1(p))
     gamma = pt.ones(n_serotypes)
     first_lag = pm.Beta("first_lag", alpha=a, beta=b)
@@ -343,7 +343,7 @@ with pm.Model() as dengue_model:
 
 # NUTS
 with dengue_model:
-    trace = pm.sample(300, tune=300, target_accept=0.999, chains=6, cores=6, init='auto', progressbar=True)
+    trace = pm.sample(200, tune=200, target_accept=0.999, chains=6, cores=6, init='auto', progressbar=True)
 
 # Plot posterior predictive checks
 with dengue_model:
