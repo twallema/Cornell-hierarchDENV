@@ -213,8 +213,10 @@ with pm.Model() as dengue_model:
     # Try to combine an AR(p) with a CAR prior on every timestep in the past
 
     ## Regularisation of the overall noise
-    alpha_t_sigma_shrinkage = pm.HalfNormal("alpha_t_sigma_shrinkage", sigma=0.10)
-    alpha_t_sigma = pm.HalfNormal("alpha_t_sigma", sigma=alpha_t_sigma_shrinkage, shape=n_serotypes)
+    corr_sigma_shrinkage = pm.HalfNormal("corr_sigma_shrinkage", sigma=0.10)
+    corr_sigma = pm.HalfNormal("corr_sigma", sigma=corr_sigma_shrinkage, shape=n_serotypes)
+    ratio_uncorrelated = pm.HalfNormal("ratio_uncorrelated", sigma=1)
+    uncorr_sigma = pm.Deterministic("uncorr_sigma", ratio_uncorrelated * corr_sigma)
 
     ## Temporal correlation structure: Decaying weights rho_k = 1/(k**gamma_i) --> identifiable but I think this is too strict
     p = 2
@@ -257,10 +259,7 @@ with pm.Model() as dengue_model:
     chol = pt.slinalg.cholesky(Q)
 
     # Scale with the noise
-    chol = chol * alpha_t_sigma[:, None, None]  # broadcast over p and states
-
-    ratio_uncorrelated = pm.HalfNormal("ratio_uncorrelated", sigma=1)
-    alpha_t_uncorr_sigma = pm.Deterministic("alpha_t_uncorr_sigma", alpha_t_sigma * ratio_uncorrelated)
+    chol = chol * corr_sigma[:, None, None]  # broadcast over p and states
 
     # Initialise AR(p) initial condition
     AR_init = pm.Normal("AR_init", mu=0, sigma=1, shape=(p, n_serotypes, n_states))
@@ -272,7 +271,7 @@ with pm.Model() as dengue_model:
     epsilon_uncorr = pm.Normal("epsilon_uncorr", mu=0, sigma=1, shape=(n_months - p, n_serotypes, n_states))
 
 
-    def arp_step(epsilon_corr_t, epsilon_uncorr_t, previous_vals, rho, chol, alpha_t_uncorr_sigma):
+    def arp_step(epsilon_corr_t, epsilon_uncorr_t, previous_vals, rho, chol, uncorr_sigma):
         """
         previous_vals: (p, n_serotypes, n_states)
         epsilon_t: (n_serotypes, n_states)
@@ -280,7 +279,7 @@ with pm.Model() as dengue_model:
         """
 
         spatial_noise = pt.batched_dot(epsilon_corr_t, chol)
-        AR_noise = epsilon_uncorr_t * alpha_t_uncorr_sigma[:, None]
+        AR_noise = epsilon_uncorr_t * uncorr_sigma[:, None]
         AR_mean = []
         for lag in range(p):
             # Apply temporal weight rho_k (serotype-specific)
@@ -300,7 +299,7 @@ with pm.Model() as dengue_model:
         fn=arp_step,
         sequences=[epsilon_corr, epsilon_uncorr],
         outputs_info=AR_init,
-        non_sequences=[rho, chol, alpha_t_uncorr_sigma],
+        non_sequences=[rho, chol, uncorr_sigma],
     )
 
 
@@ -350,7 +349,7 @@ arviz.to_netcdf(ppc, "ppc.nc")
 
 # Traceplot
 variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
-                  'alpha_t_sigma_shrinkage', 'alpha_t_sigma', 'log_a', 'AR_init', 'ratio_uncorrelated', 'first_lag',
+                  'corr_sigma_shrinkage', 'corr_sigma', 'log_a', 'AR_init', 'ratio_uncorrelated', 'first_lag',
                 ]
 if distance_matrix:
     variables2plot += ['zeta',]
