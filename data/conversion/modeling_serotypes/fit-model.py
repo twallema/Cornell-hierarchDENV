@@ -211,15 +211,15 @@ with pm.Model() as dengue_model:
     # log 𝜃_{i,s,t} = 𝛼 + 𝛼_s + 𝛼_t + 𝛼_i + 𝛼_{i,t} + 𝛼_{s,i}    
 
     # Try to combine an AR(p) with a CAR prior on every timestep in the past
+    p = 2
 
     ## Regularisation of the overall noise
     corr_sigma_shrinkage = pm.HalfNormal("corr_sigma_shrinkage", sigma=0.10)
     corr_sigma = pm.HalfNormal("corr_sigma", sigma=corr_sigma_shrinkage, shape=n_serotypes)
-    ratio_uncorrelated = pm.HalfNormal("ratio_uncorrelated", sigma=1)
+    ratio_uncorrelated = pm.TruncatedNormal("ratio_uncorrelated", mu=1, sigma=0.25, lower=0)
     uncorr_sigma = pm.Deterministic("uncorr_sigma", ratio_uncorrelated * corr_sigma)
 
     ## Temporal correlation structure: Decaying weights rho_k = 1/(k**gamma_i) --> identifiable but I think this is too strict
-    p = 2
     a,b = weak_beta_prior(critical_rho1(p))
     gamma = pt.ones(n_serotypes)
     first_lag = pm.Beta("first_lag", alpha=a, beta=b)
