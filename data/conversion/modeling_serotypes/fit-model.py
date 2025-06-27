@@ -142,7 +142,7 @@ def critical_rho1(p, gamma):
     return 1 / pt.sum(1 / np.arange(1, p + 1)[None,:]**gamma[:,None], axis=1)
 
 if CAR_per_lag:
-    
+
     with pm.Model() as model:
 
         # --- Typing Effort Model ---
@@ -344,11 +344,14 @@ arviz.to_netcdf(trace, "trace.nc")
 arviz.to_netcdf(ppc, "ppc.nc")
 
 # Traceplot
-variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
-                  'total_sigma_shrinkage', 'total_sigma', 'proportion_uncorr', 'gamma', 'a_intercept', 'a_slope', 'AR_init',
-                ]
-if distance_matrix:
-    variables2plot += ['zeta_intercept', 'zeta_slope']
+if CAR_per_lag:
+    variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
+                    'total_sigma_shrinkage', 'total_sigma', 'proportion_uncorr', 'gamma', 'a_intercept', 'a_slope', 'AR_init',
+                    ]
+    if distance_matrix:
+        variables2plot += ['zeta_intercept', 'zeta_slope']
+else:
+    pass
 
 for var in variables2plot:
     arviz.plot_trace(trace, var_names=[var]) 
