@@ -259,14 +259,16 @@ with pm.Model() as dengue_model:
     # Scale with the noise
     chol = chol * alpha_t_sigma[:, None, None]  # broadcast over p and states
 
-    # initialise initial condition
-    AR_init = pm.Normal("AR_init", mu=0, sigma=1, shape=(p, n_serotypes, n_states))
-
-    # --- FIX: epsilon_corr now includes innovations for each lag at each timestep ---
-    epsilon_corr = pm.Normal("epsilon_corr", 0, 1, shape=(n_months - p, n_serotypes, n_states))
-
     ratio_uncorrelated = pm.HalfNormal("ratio_uncorrelated", sigma=1)
     alpha_t_uncorr_sigma = pm.Deterministic("alpha_t_uncorr_sigma", alpha_t_sigma * ratio_uncorrelated)
+
+    # Initialise AR(p) initial condition
+    AR_init = pm.Normal("AR_init", mu=0, sigma=1, shape=(p, n_serotypes, n_states))
+
+    # Initialise spatial innovation noise (one per lag)
+    epsilon_corr = pm.Normal("epsilon_corr", 0, 1, shape=(n_months - p, n_serotypes, n_states))
+
+    # Initialise random noise
     epsilon_uncorr = pm.Normal("epsilon_uncorr", mu=0, sigma=1, shape=(n_months - p, n_serotypes, n_states))
 
 
