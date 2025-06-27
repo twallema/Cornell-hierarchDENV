@@ -220,13 +220,13 @@ with pm.Model() as dengue_model:
     uncorr_sigma = pm.Deterministic("uncorr_sigma", proportion_uncorr * total_sigma)
     corr_sigma = pm.Deterministic("corr_sigma", (1 - proportion_uncorr) * total_sigma)
 
-
     ## Temporal correlation structure: Decaying weights rho_k = first_lag/(k**gamma_i) --> rule-of-thumb for monotonically decreasing coefficients: edge of stationarity if sum(rho_k) \approx 1
     p = 2
     a,b = weak_beta_prior(critical_rho1(p))
     gamma = pt.ones(n_serotypes)
     first_lag = pm.Beta("first_lag", alpha=a, beta=b)
     decay_mean = first_lag / ((np.arange(1, p + 1)[None,:])**gamma[:,None])
+    AR_coefficients_sum = pm.Deterministic("AR_coefficients_sum", pt.sum(decay_mean, axis=1))
     rho = pm.Deterministic("rho", decay_mean)
 
     ## Priors for spatial correlation radius (zeta)
@@ -361,7 +361,7 @@ arviz.to_netcdf(ppc, "ppc.nc")
 
 # Traceplot
 variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
-                  'total_sigma_shrinkage', 'total_sigma', 'proportion_uncorr', 'first_lag', 'a_intercept', 'a_slope', 'AR_init',
+                  'total_sigma_shrinkage', 'total_sigma', 'proportion_uncorr', 'first_lag', 'AR_coefficients_sum', 'a_intercept', 'a_slope', 'AR_init',
                 ]
 if distance_matrix:
     variables2plot += ['zeta_intercept', 'zeta_slope']
