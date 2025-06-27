@@ -21,6 +21,7 @@ pytensor.config.on_opt_error = "ignore"
 
 # Distance matrix
 # ~~~~~~~~~~~~~~~
+
 distance_matrix = False
 
 if distance_matrix == False:
@@ -140,6 +141,23 @@ state_year_to_region_year = df.groupby("state_year_idx")["region_year_idx"].firs
 ## Preparing the model##
 ########################
 
+def critical_rho1(p):
+    """Compute the max allowed rho_1 for a harmonic AR(p) to be on the edge of stationarity"""
+    return 1 / np.sum(1 / np.arange(1, p + 1))
+
+def beta_params_from_mean_variance(mu, var):
+    """Compute alpha, beta for a Beta distribution with given mean and variance"""
+    tmp = mu * (1 - mu) / var - 1
+    alpha = mu * tmp
+    beta = (1 - mu) * tmp
+    return alpha, beta
+
+def weak_beta_prior(critical_value, margin=0.05, strength=0.01):
+    """Construct a weak Beta prior with given mean and large variance"""
+    var = strength * (1-margin)*critical_value * (1 - (1-margin)*critical_value)
+    return beta_params_from_mean_variance((1-margin)*critical_value, var)
+
+
 with pm.Model() as dengue_model:
 
     # --- Typing Effort Model ---
@@ -194,37 +212,25 @@ with pm.Model() as dengue_model:
     # log 𝜃_{i,s,t} = 𝛼 + 𝛼_s + 𝛼_t + 𝛼_i + 𝛼_{i,t} + 𝛼_{s,i}    
 
     # Try to combine an AR(p) with a CAR prior on every timestep in the past
-    ## priors for autogregression coefficients and overall noise are serotype-specific
-    p = 1
 
-    ## Regularisation of the overall noise
-    alpha_t_sigma_shrinkage = pm.HalfNormal("alpha_t_sigma_shrinkage", sigma=0.10)
-    alpha_t_sigma = pm.HalfNormal("alpha_t_sigma", sigma=alpha_t_sigma_shrinkage, shape=n_serotypes)
-
-    ## Temporal correlation structure: Decaying weights rho_k = 1/(k**gamma_i) --> identifiable but I think this is too strict
+    ## Regularisation of the spatially correlated innovation noise and coupling with the spatially uncorrelated innovation noise
+    corr_sigma_shrinkage = pm.HalfNormal("corr_sigma_shrinkage", sigma=0.10)
+    corr_sigma = pm.HalfNormal("corr_sigma", sigma=corr_sigma_shrinkage, shape=n_serotypes)
+    ratio_uncorrelated = pm.HalfNormal("ratio_uncorrelated", sigma=1)
+    uncorr_sigma = pm.Deterministic("uncorr_sigma", ratio_uncorrelated * corr_sigma)
+    
+    ## Temporal correlation structure: Decaying weights rho_k = first_lag/(k**gamma_i) --> rule-of-thumb for monotonically decreasing coefficients: edge of stationarity if sum(rho_k) \approx 1
+    p = 12
+    a,b = weak_beta_prior(critical_rho1(p))
     gamma = pt.ones(n_serotypes)
-    decay_mean = 1 / ((np.arange(1, p + 1)[None,:])**gamma[:,None])
+    first_lag = pm.Beta("first_lag", alpha=a, beta=b)
+    decay_mean = first_lag / ((np.arange(1, p + 1)[None,:])**gamma[:,None])
     rho = pm.Deterministic("rho", decay_mean)
-
-    ## Temporal correlation structure: Decaying weights rho_k ~ Beta() with mean = 1/(k**gamma_i) and hierarchical concentration parameter per serotype --> should be more loose
-    # # Fix first lag to one as an anchor
-    # rho_first = pt.ones((n_serotypes, 1))
-    # # But allow great flexibility in remaining lags: rho[:, 1:] ~ Beta(mean = 1/k^γ, conc = flexible)
-    # gamma = 1 #pm.TruncatedNormal("gamma", mu=1.0, sigma=0.1, lower=0, shape=n_serotypes)
-    # decay_mean = 1.0 / (np.arange(2, p + 1)[None, :]) # ** gamma[:, None])  # shape: (n_serotypes, p-1)
-    # # Hierarchical concentration to control variability
-    # log_concentration = pm.Normal("log_concentration", mu=4, sigma=0.5, shape=n_serotypes)
-    # concentration = pm.Deterministic("concentration", pt.exp(log_concentration))
-    # alpha = decay_mean * concentration[:, None]
-    # beta = (1 - decay_mean) * concentration[:, None]
-    # rho_rest = pm.Beta("rho_rest", alpha=alpha, beta=beta, shape=(n_serotypes, p - 1))
-    # # Concatenate fixed and sampled parts
-    # rho = pm.Deterministic("rho", pt.concatenate([rho_first, rho_rest], axis=1))  # shape: (n_serotypes, p)
 
     ## Priors for spatial correlation radius (zeta)
     if distance_matrix: 
         ### Base radius and linear slope per lag
-        zeta_intercept = pm.TruncatedNormal("zeta_intercept", mu=300, sigma=10, lower=50)
+        zeta_intercept = pm.HalfNormal("zeta_intercept", sigma=300)
         zeta_slope = pm.HalfNormal("zeta_slope", sigma=100)
         ### Construct linearly increasing radius over lags: zeta_lag = intercept + slope * lag
         lags = pt.arange(p)
@@ -238,7 +244,7 @@ with pm.Model() as dengue_model:
     ## Priors for spatial correlation strength (a)
     # For strength, use a decreasing linear function on log scale:
     a_intercept = pm.Normal("a_intercept", mu=4.5, sigma=0.5)
-    a_slope = pm.Normal("a_slope", mu=-1.5, sigma=0.5)          # Values 3 --> -3 corespond to a going from a=0.95 --> a=0.05
+    a_slope = pm.Normal("a_slope", mu=-1.0, sigma=0.5)          # Values 3 --> -3 corespond to a going from a=0.95 --> a=0.05
     log_a = a_intercept + a_slope * pt.arange(p)
     a_car = pm.Deterministic("a_car", pm.math.sigmoid(log_a))  
 
@@ -253,33 +259,26 @@ with pm.Model() as dengue_model:
     degree = pt.sum(W, axis=-1)[:, :, :, None]
     I = pt.eye(n_states)[None, None, :, :]
     D = I * degree
-    # Q = D - a * W + jitter
     jitter = 1e-6 * pt.diag(pt.ones(n_states))
     jitter = jitter[None, None, :, :]
-    Q = D - a_car[None,:,None, None] * W + jitter
-    # Q shape == (n_serotypes, p, n_states, n_states)
+    Q = D - a_car[None,:,None, None] * W + jitter # Q shape == (n_serotypes, p, n_states, n_states)
 
-    # Compute the Cholesky of Q
+    # Compute the Cholesky of Q, scale with noise and reshape
     chol = pt.slinalg.cholesky(Q)
-
-    # Scale with the noise
-    chol = chol * alpha_t_sigma[:, None, None, None]  # broadcast over p and states
-
-    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-    chol_matrix_lag = chol.transpose((1, 0, 2, 3)) # shape == (p, n_serotypes, n_states, n_states) --> makes more sense
+    chol = chol * corr_sigma[:, None, None, None]  # broadcast over p and states
+    chol = chol.transpose((1, 0, 2, 3)) # shape == (p, n_serotypes, n_states, n_states) --> makes more sense
     
-    # initialise initial condition
-    alpha_init = pm.Normal("alpha_init", mu=0, sigma=0.1, shape=(p, n_serotypes, n_states))
+    # Initialise AR(p) initial condition
+    AR_init = pm.Normal("AR_init", mu=0, sigma=1, shape=(p, n_serotypes, n_states))
 
-    # --- FIX: epsilon now includes innovations for each lag at each timestep ---
-    epsilon = pm.Normal("epsilon", 0, 1, shape=(n_months - p, p, n_serotypes, n_states))
+    # Initialise spatial innovation noise (one per lag)
+    epsilon_corr = pm.Normal("epsilon_corr", 0, 1, shape=(n_months - p, p, n_serotypes, n_states))
 
-
-    ratio_uncorrelated = pm.HalfNormal("ratio_uncorrelated", sigma=1)
-    alpha_t_uncorr_sigma = pm.Deterministic("alpha_t_uncorr_sigma", alpha_t_sigma * ratio_uncorrelated)
+    # Initialise random noise
     epsilon_uncorr = pm.Normal("epsilon_uncorr", mu=0, sigma=1, shape=(n_months - p, n_serotypes, n_states))
 
-    def arp_step(epsilon_t, epsilon_uncorr_t, previous_vals, rho, chol_matrix_lag, alpha_t_uncorr_sigma):
+    # Define the recursion of the AR(p) process
+    def ARp_step(epsilon_corr_t, epsilon_uncorr_t, previous_vals, rho, chol, uncorr_sigma):
         """
         previous_vals: (p, n_serotypes, n_states)
         epsilon_t: (p, n_serotypes, n_states)
@@ -287,19 +286,17 @@ with pm.Model() as dengue_model:
         """
         contributions = []
         for lag in range(p):
-            # Compute spatial perturbation
-            shock_lag = pt.batched_dot(epsilon_t[lag], chol_matrix_lag[lag])  # (n_serotypes, n_states)
-            # Add to lagged value
-            state_plus_noise = previous_vals[lag] + shock_lag  # (n_serotypes, n_states)
-            # Apply temporal weight rho_k (serotype-specific)
+            # Add spatial innovation at lag p to state at lag p
+            state_plus_noise = previous_vals[lag] + pt.batched_dot(epsilon_corr_t[lag], chol[lag]) # (n_serotypes, n_states)
+            # Multiply by the temporal weight rho_k (serotype-specific) --> spatial innovation size declines over time
             weighted = rho[:, lag][:, None] * state_plus_noise
             contributions.append(weighted)
 
-        # Sum across all lags
+        # Sum weighted state and spatial innovation over lags
         new_vals = sum(contributions)  # (n_serotypes, n_states)
 
-        # Add spatially-uncorrelated noise
-        uncorr_noise = epsilon_uncorr_t * alpha_t_uncorr_sigma[:, None]
+        # Finally add the spatially-uncorrelated noise
+        uncorr_noise = epsilon_uncorr_t * uncorr_sigma[:, None]
         new_vals += uncorr_noise
 
         # Shift lag window: insert new_vals at position 0
@@ -310,16 +307,15 @@ with pm.Model() as dengue_model:
         return updated_vals
     
     sequences, _ = pytensor.scan(
-        fn=arp_step,
-        sequences=[epsilon, epsilon_uncorr],
-        outputs_info=alpha_init,
-        non_sequences=[rho, chol_matrix_lag, alpha_t_uncorr_sigma],
+        fn=ARp_step,
+        sequences=[epsilon_corr, epsilon_uncorr],
+        outputs_info=AR_init,
+        non_sequences=[rho, chol, uncorr_sigma],
     )
-
 
     # sequences: (n_months - p, p, n_serotypes, n_states)
     # alpha_init: (p, n_serotypes, n_states)
-    theta_log_final = pt.concatenate([pt.repeat(alpha_init[None, :, :, :], p, axis=0), sequences], axis=0)
+    theta_log_final = pt.concatenate([pt.repeat(AR_init[None, :, :, :], p, axis=0), sequences], axis=0)
     # Step 3: slice lag zero (p=0) over full time axis
     theta_log_final = theta_log_final[:, 0, :, :]  # shape (n_months, n_serotypes, n_states)
     # Step 4: convert to flat format
@@ -347,7 +343,7 @@ with pm.Model() as dengue_model:
 
 # NUTS
 with dengue_model:
-    trace = pm.sample(200, tune=200, target_accept=0.999, chains=4, cores=4, init='auto', progressbar=True)
+    trace = pm.sample(300, tune=300, target_accept=0.999, chains=6, cores=6, init='auto', progressbar=True)
 
 # Plot posterior predictive checks
 with dengue_model:
@@ -363,7 +359,7 @@ arviz.to_netcdf(ppc, "ppc.nc")
 
 # Traceplot
 variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
-                  'alpha_t_sigma_shrinkage', 'alpha_t_sigma', 'a_intercept', 'a_slope', 'alpha_init', 'ratio_uncorrelated',
+                  'corr_sigma_shrinkage', 'corr_sigma', 'ratio_uncorrelated', 'first_lag', 'a_intercept', 'a_slope', 'AR_init',
                 ]
 if distance_matrix:
     variables2plot += ['zeta_intercept', 'zeta_slope']
