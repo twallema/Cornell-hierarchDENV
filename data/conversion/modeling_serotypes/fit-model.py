@@ -262,22 +262,22 @@ with pm.Model() as dengue_model:
     # initialise initial condition
     AR_init = pm.Normal("AR_init", mu=0, sigma=1, shape=(p, n_serotypes, n_states))
 
-    # --- FIX: epsilon now includes innovations for each lag at each timestep ---
-    epsilon = pm.Normal("epsilon", 0, 1, shape=(n_months - p, n_serotypes, n_states))
+    # --- FIX: epsilon_corr now includes innovations for each lag at each timestep ---
+    epsilon_corr = pm.Normal("epsilon_corr", 0, 1, shape=(n_months - p, n_serotypes, n_states))
 
     ratio_uncorrelated = pm.HalfNormal("ratio_uncorrelated", sigma=1)
     alpha_t_uncorr_sigma = pm.Deterministic("alpha_t_uncorr_sigma", alpha_t_sigma * ratio_uncorrelated)
     epsilon_uncorr = pm.Normal("epsilon_uncorr", mu=0, sigma=1, shape=(n_months - p, n_serotypes, n_states))
 
 
-    def arp_step(epsilon_t, epsilon_uncorr_t, previous_vals, rho, chol, alpha_t_uncorr_sigma):
+    def arp_step(epsilon_corr_t, epsilon_uncorr_t, previous_vals, rho, chol, alpha_t_uncorr_sigma):
         """
         previous_vals: (p, n_serotypes, n_states)
         epsilon_t: (n_serotypes, n_states)
         epsilon_uncorr_t: (n_serotypes, n_states)
         """
 
-        spatial_noise = pt.batched_dot(epsilon_t, chol)
+        spatial_noise = pt.batched_dot(epsilon_corr_t, chol)
         AR_noise = epsilon_uncorr_t * alpha_t_uncorr_sigma[:, None]
         AR_mean = []
         for lag in range(p):
@@ -296,7 +296,7 @@ with pm.Model() as dengue_model:
     
     sequences, _ = pytensor.scan(
         fn=arp_step,
-        sequences=[epsilon, epsilon_uncorr],
+        sequences=[epsilon_corr, epsilon_uncorr],
         outputs_info=AR_init,
         non_sequences=[rho, chol, alpha_t_uncorr_sigma],
     )
