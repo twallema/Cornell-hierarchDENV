@@ -133,15 +133,19 @@ n_regions = len(region_labels)
 # This assumes each state-year belongs to exactly 1 region-year
 state_year_to_region_year = df.groupby("state_year_idx")["region_year_idx"].first().sort_index().tolist()
 
-########################
-## Preparing the model##
-########################
+#########################
+## Preparing the model ##
+#########################
 
 def critical_rho1(p, gamma):
     """Compute the coefficient of the first lag so that the sum of p AR coefficients: rho_k = 1/k**gamma sum to zero; resulting in a non-stationary process"""
     return 1 / pt.sum(1 / np.arange(1, p + 1)[None,:]**gamma[:,None], axis=1)
 
 if CAR_per_lag:
+
+    #####################################################################
+    ## Model 1: spatially correlated innovation (CAR) per temporal lag ##
+    #####################################################################
 
     with pm.Model() as model:
 
@@ -322,6 +326,11 @@ if CAR_per_lag:
 
         Y_obs = pm.Multinomial("Y_obs", n=N_typed_latent, p=p, observed=Y_multinomial)
 
+else:
+
+    ########################################################
+    ## Model 2: one spatially correlated innovation (CAR) ##
+    ########################################################
 
 ########################
 ## Running the model  ##
@@ -351,7 +360,12 @@ if CAR_per_lag:
     if distance_matrix:
         variables2plot += ['zeta_intercept', 'zeta_slope']
 else:
-    pass
+    variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
+                    'total_sigma_shrinkage', 'total_sigma', 'proportion_uncorr', 'gamma', 'log_a', 'AR_init',
+                    ]
+    if distance_matrix:
+        variables2plot += ['zeta',]
+
 
 for var in variables2plot:
     arviz.plot_trace(trace, var_names=[var]) 
