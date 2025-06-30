@@ -20,7 +20,7 @@ def str_to_bool(value):
 # arguments determine the model + data combo used to forecast
 # How to run: python fit-model.py -ID test -p 2 -distance_matrix False -CAR_per_lag False
 parser = argparse.ArgumentParser()
-parser.add_argument("-chains", type=int, help="Number of parallel chains.", default=3)
+parser.add_argument("-chains", type=int, help="Number of parallel chains.", default=4)
 parser.add_argument("-ID", type=str, help="Sampler output name.")
 parser.add_argument("-p", type=int, help="Order of AR(p) process.")
 parser.add_argument("-distance_matrix", type=str_to_bool, help="Use distance matrix versus adjacency matrix.")
@@ -229,7 +229,7 @@ if CAR_per_lag:
 
         # Try to combine an AR(p) with a CAR prior on every timestep in the past
         ## Regularisation of the overall noise & split between spatially structured and unstructured noise
-        total_sigma_shrinkage = pm.HalfNormal("total_sigma_shrinkage", sigma=0.25)
+        total_sigma_shrinkage = pm.HalfNormal("total_sigma_shrinkage", sigma=0.1)
         total_sigma = pm.HalfNormal("total_sigma", sigma=total_sigma_shrinkage, shape=n_serotypes)
         proportion_uncorr = pm.Beta("proportion_uncorr", alpha=1, beta=2)  # proportion of noise that is unstructured (encourages structured noise)
         uncorr_sigma = pm.Deterministic("uncorr_sigma", proportion_uncorr * total_sigma)
@@ -237,7 +237,7 @@ if CAR_per_lag:
 
         ## Temporal correlation structure: Decaying weights rho_k = 1/(k**gamma_i) --> identifiable but I think this is too strict
         #a,b = weak_beta_prior(critical_rho1(p,gamma))
-        gamma = pm.TruncatedNormal("gamma", mu=1, sigma=0.25, lower=0, shape=n_serotypes)
+        gamma = pt.ones(n_serotypes) #pm.TruncatedNormal("gamma", mu=1, sigma=0.10, lower=0, shape=n_serotypes)
         first_lag = pm.Deterministic("first_lag", critical_rho1(p,gamma))
         rho = pm.Deterministic("rho", first_lag[:,None] / ((np.arange(1, p + 1)[None,:])**gamma[:,None]))
         AR_coefficients_sum = pm.Deterministic("AR_coefficients_sum", pt.sum(rho, axis=1))
@@ -245,7 +245,7 @@ if CAR_per_lag:
         ## Priors for spatial correlation radius (zeta)
         if distance_matrix: 
             ### Base radius and linear slope per lag
-            zeta_intercept = pm.HalfNormal("zeta_intercept", sigma=300)
+            zeta_intercept = pm.HalfNormal("zeta_intercept", sigma=100)
             zeta_slope = pm.HalfNormal("zeta_slope", sigma=100)
             ### Construct linearly increasing radius over lags: zeta_lag = intercept + slope * lag
             lags = pt.arange(p)
@@ -258,7 +258,7 @@ if CAR_per_lag:
 
         ## Priors for spatial correlation strength (a)
         # For strength, use a decreasing linear function on log scale:
-        a_intercept = pm.Normal("a_intercept", mu=3.0, sigma=1.0)
+        a_intercept = 4.5 #pm.Normal("a_intercept", mu=4.5, sigma=1.5)
         a_slope = pm.Normal("a_slope", mu=-1.0, sigma=0.5)          # Values 3 --> -3 corespond to a going from a=0.95 --> a=0.05
         log_a = a_intercept + a_slope * pt.arange(p)
         a_car = pm.Deterministic("a_car", pm.math.sigmoid(log_a))  
@@ -411,7 +411,7 @@ else:
         # log 𝜃_{i,s,t} = 𝛼 + 𝛼_s + 𝛼_t + 𝛼_i + 𝛼_{i,t} + 𝛼_{s,i}    
 
         ## Regularisation of the overall noise & split between spatially structured and unstructured noise
-        total_sigma_shrinkage = pm.HalfNormal("total_sigma_shrinkage", sigma=0.25)
+        total_sigma_shrinkage = pm.HalfNormal("total_sigma_shrinkage", sigma=0.1)
         total_sigma = pm.HalfNormal("total_sigma", sigma=total_sigma_shrinkage, shape=n_serotypes)
         proportion_uncorr = pm.Beta("proportion_uncorr", alpha=1, beta=2)  # proportion of noise that is unstructured (encourages structured noise)
         uncorr_sigma = pm.Deterministic("uncorr_sigma", proportion_uncorr * total_sigma)
@@ -419,21 +419,21 @@ else:
 
         ## Temporal correlation structure: Decaying weights rho_k = 1/(k**gamma_i) --> identifiable but I think this is too strict
         #a,b = weak_beta_prior(critical_rho1(p,gamma))
-        gamma = pm.TruncatedNormal("gamma", mu=1, sigma=0.25, lower=0, shape=n_serotypes)
+        gamma = pt.ones(n_serotypes) #pm.TruncatedNormal("gamma", mu=1, sigma=0.1, lower=0, shape=n_serotypes)
         first_lag = pm.Deterministic("first_lag", critical_rho1(p,gamma))
         rho = pm.Deterministic("rho", first_lag[:,None] / ((np.arange(1, p + 1)[None,:])**gamma[:,None]))
         AR_coefficients_sum = pm.Deterministic("AR_coefficients_sum", pt.sum(rho, axis=1))
 
         ## Priors for spatial correlation radius (zeta)
         if distance_matrix: 
-            zeta = pm.HalfNormal("zeta", sigma=300)
+            zeta = pm.HalfNormal("zeta", sigma=100)
         else:
             zeta = -1
             pass
 
         ## Priors for spatial correlation strength (a)
         # For strength, use a decreasing linear function on log scale:
-        log_a = pm.Normal("log_a", mu=3, sigma=1)
+        log_a = 4.5 #pm.Normal("log_a", mu=4.5, sigma=1.5)
         a_car = pm.Deterministic("a_car", pm.math.sigmoid(log_a))  
 
         # Pair-wise kernel first
@@ -532,7 +532,7 @@ else:
 
 # NUTS
 with model:
-    trace = pm.sample(500, tune=500, target_accept=0.999, chains=chains, cores=chains, init='adapt_diag', progressbar=True)
+    trace = pm.sample(500, tune=700, target_accept=0.999, chains=chains, cores=chains, init='adapt_diag', progressbar=True)
 
 # Plot posterior predictive checks
 with model:
@@ -549,13 +549,13 @@ arviz.to_netcdf(ppc, f"{output_folder}/ppc.nc")
 # Traceplot
 if CAR_per_lag:
     variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
-                    'total_sigma_shrinkage', 'total_sigma', 'proportion_uncorr', 'gamma', 'a_intercept', 'a_slope', 'AR_init',
+                    'total_sigma_shrinkage', 'total_sigma', 'proportion_uncorr', 'a_slope', 'AR_init',
                     ]
     if distance_matrix:
         variables2plot += ['zeta_intercept', 'zeta_slope']
 else:
     variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
-                    'total_sigma_shrinkage', 'total_sigma', 'proportion_uncorr', 'gamma', 'log_a', 'AR_init',
+                    'total_sigma_shrinkage', 'total_sigma', 'proportion_uncorr', 'AR_init',
                     ]
     if distance_matrix:
         variables2plot += ['zeta',]
