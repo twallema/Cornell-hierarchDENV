@@ -259,7 +259,7 @@ if CAR_per_lag:
         ## Priors for spatial correlation strength (a)
         # For strength, use a decreasing linear function on log scale:
         a_intercept = 4.5 #pm.Normal("a_intercept", mu=4.5, sigma=1.5)
-        a_slope = pm.Normal("a_slope", mu=-1.0, sigma=0.5)          # Values 3 --> -3 corespond to a going from a=0.95 --> a=0.05
+        a_slope = pm.Normal("a_slope", mu=-1.5, sigma=0.5)          # Values 3 --> -3 corespond to a going from a=0.95 --> a=0.05
         log_a = a_intercept + a_slope * pt.arange(p)
         a_car = pm.Deterministic("a_car", pm.math.sigmoid(log_a))  
 
