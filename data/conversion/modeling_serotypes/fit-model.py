@@ -285,12 +285,7 @@ if CAR_per_lag:
             pass
 
         ## Priors for spatial correlation strength (a)
-        # For strength, use a decreasing linear function on log scale:
-        a_intercept = 4.5 #pm.Normal("a_intercept", mu=4.5, sigma=1.5)
-        a_end = -4.5
-        a_slope = pm.Normal("a_slope", mu=-(a_intercept-a_end)/p, sigma=(a_intercept-a_end)/p*0.33)         
-        log_a = a_intercept + a_slope * pt.arange(p)
-        a_car = pm.Deterministic("a_car", pm.math.sigmoid(log_a))  
+        a_car = pt.ones(p)
 
         # Pair-wise kernel first
         # D_shared: (n_states, n_states)
@@ -464,8 +459,7 @@ else:
         corr_sigma = pm.Deterministic("corr_sigma", (1 - proportion_uncorr) * total_sigma)
 
         ## Temporal correlation structure: Decaying weights rho_k = 1/(k**gamma_i) --> identifiable but I think this is too strict
-        #a,b = weak_beta_prior(critical_rho1(p,gamma))
-        gamma = pt.ones(n_serotypes) #pm.TruncatedNormal("gamma", mu=1, sigma=0.1, lower=0, shape=n_serotypes)
+        gamma = pt.ones(n_serotypes)
         first_lag = pm.Deterministic("first_lag", critical_rho1(p,gamma))
         rho = pm.Deterministic("rho", first_lag[:,None] / ((np.arange(1, p + 1)[None,:])**gamma[:,None]))
         AR_coefficients_sum = pm.Deterministic("AR_coefficients_sum", pt.sum(rho, axis=1))
@@ -591,7 +585,7 @@ arviz.to_netcdf(ppc, f"{output_folder}/ppc.nc")
 # Traceplot
 if CAR_per_lag:
     variables2plot = ['beta', 'beta_y', 'beta_y_sigma_shrinkage', 'beta_y_sigma', 'r_ratio', 's_ratio',
-                    'total_sigma_shrinkage', 'total_sigma', 'proportion_uncorr', 'a_slope', 'AR_init',
+                    'total_sigma_shrinkage', 'total_sigma', 'proportion_uncorr', 'AR_init',
                     ]
     if distance_matrix:
         variables2plot += ['zeta_intercept', 'zeta_slope']
