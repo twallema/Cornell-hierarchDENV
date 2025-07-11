@@ -158,7 +158,25 @@ n_serotypes = len(sero_cols)
 n_regions = len(region_labels)
 
 # This assumes each state-year belongs to exactly 1 region-year
-state_year_to_region_year = df.groupby("state_year_idx")["region_year_idx"].first().sort_index().tolist()
+#state_year_to_region_year = df.groupby("state_year_idx")["region_year_idx"].first().sort_index().tolist()
+
+# Maps years to state-years
+year_to_state_year = (
+    df[["state_year_idx", "year_idx"]]
+    .drop_duplicates()
+    .sort_values("state_year_idx")
+    .set_index("state_year_idx")["year_idx"]
+    .to_numpy()
+)
+
+# Maps years to region-years
+year_to_region_year = (
+    df[["region_year_idx", "year_idx"]]
+    .drop_duplicates()
+    .sort_values("region_year_idx")
+    .set_index("region_year_idx")["year_idx"]
+    .to_numpy()
+)
 
 #########################
 ## Preparing the model ##
@@ -177,55 +195,66 @@ if CAR_per_lag:
     with pm.Model() as model:
 
         # --- Typing Effort Model ---
-        # (original plan)
-        # N^*_{s,t} ~ Binomial(N_{total,s,t}, \delta_{s,t}),
-        # where N_{total,s,t} the observed total dengue incidence and \delta_{s,t} the fraction that gets subtyped.
-        #
-        # 𝛿_{s,t} ~ 𝐵𝑒𝑡𝑎(𝜇_{s,t}.𝜙, (1 − 𝜇_{s,t}).𝜙)
-        # logit(𝜇_{s,t}) = \beta + \beta_s + \beta_t + \sum_j \beta_j X_{s,j}
 
+        # N^*_{s,t} ~ Binomial(N_{total,s,t}, \delta_{s,t}),
+        # \delta_{s,t} ~ Logit-Normal\mu_{s,t}, \sigma) OR 𝛿_{s,t} ~ Beta(\mu_{s,t}.\phi, (1 − \mu_{s,t}).\phi)
+        # logit(\mu_{s,t}) = \beta + (\beta_{r(s),y} + \epsilon_{s,y}
+        # where N_{total,s,t} the observed total dengue incidence, \delta_{s,t} the fraction that gets subtyped, and,
+        # \beta_{r(s),y} ~ Normal(0, \sigma_{bry})
+        # \epsilon_{s,y} ~ Normal(0, 0.5 * \sigma_{bry}(s))
+        # \sigma_{bry} ~ Halfnormal(sigma_{b, shrinkage})
+        # \sigma_{b, shrinkage} ~ Exponential(1)
+        
         # \beta (global intercept)
         beta = pm.Normal("beta", mu=-4.5, sigma=1.5)
 
-        # \beta_{s,t}: State-year-specific typing effort random effect: \beta_{s,t} = \beta_{r[s],t} + \epsilon_{s,t}
-        # Region-year effect
-        beta_rt_shrinkage = pm.Exponential("beta_rt_shrinkage", 1)
-        beta_rt_sigma = pm.HalfNormal("beta_rt_sigma", sigma=beta_rt_shrinkage, shape=n_region_years)
-        beta_rt = pm.Normal("beta_rt", mu=0.0, sigma=beta_rt_sigma, shape=n_region_years)
-        # State-year deviation from region-year
-        eps_st_sigma = pm.Deterministic("eps_st_sigma", beta_rt_sigma[state_year_to_region_year]/2)
-        eps_st = pm.Normal("eps_st", mu=0.0, sigma=eps_st_sigma, shape=n_state_years)
-        # Final state-year effect
-        beta_st = pm.Deterministic("beta_st", beta_rt[region_year_idx] + eps_st[state_year_idx])
+        # \beta_{s,t}: State-year-specific typing effort random effect with spatial hierarchy
+        # --- 3-level hierarchy: Brazil-year -> Region-year -> State-year ---
 
-        # # 𝛿_{s,t} ~ 𝐵𝑒𝑡𝑎(𝜇_{s,t}.𝜙, (1 − 𝜇_{s,t}).𝜙)
-        # # logit(𝜇_{s,t})
-        # mu = pm.Deterministic("mu", pm.math.sigmoid(beta + beta_st))
-        # phi = pm.HalfNormal("phi", sigma=5.0)
-        # alpha_beta = mu * phi
-        # beta_beta = (1 - mu) * phi
-        # delta_st = pm.Beta("delta_st", alpha=alpha_beta, beta=beta_beta, observed=delta_obs)
-        # Alternative: model serotyped fraction as a logit-normal since beta is close to zero
-        logit_delta_obs = np.log(delta_obs / (1 - delta_obs)) 
-        logit_mu = beta  + beta_st
+        # Base noise for all typing effort effects
+        beta_y_sigma_shrinkage = pm.HalfNormal("beta_y_sigma_shrinkage", sigma=1.0)
+        beta_y_sigma = pm.HalfNormal("beta_y_sigma", sigma=beta_y_sigma_shrinkage, shape=n_years)
+        # Ratio of Brazil-year to region-year variation (push toward 0)
+        r_ratio = pm.HalfNormal("r_ratio", sigma=1.0)
+        # Ratio of Brazil-year to state-year variation (push toward 0)
+        s_ratio = pm.HalfNormal("s_ratio", sigma=1.0)
+        # Level 1: Brazil-year effects
+        beta_y = pm.Normal("beta_y", mu=0.0, sigma=beta_y_sigma, shape=n_years)
+        # Level 2: Region-year effects (as deviation from Brazil-year)
+        sigma_ry = pm.Deterministic("sigma_ry", r_ratio * beta_y_sigma[year_to_region_year])
+        eps_ry = pm.Normal("eps_ry", mu=0, sigma=sigma_ry, shape=n_region_years)
+        # Level 3: State-year effects (as deviation from region-year)
+        sigma_sy = pm.Deterministic("sigma_sy", s_ratio * beta_y_sigma[year_to_state_year])
+        eps_sy = pm.Normal("eps_sy", mu=0, sigma=sigma_sy, shape=n_state_years)
+        # Final latent effort
+        beta_st = pm.Deterministic("beta_st", beta_y[year_idx] + eps_ry[region_year_idx] + eps_sy[state_year_idx])
+
+        # Region-year effect
+        # beta_rt_shrinkage = pm.Exponential("beta_rt_shrinkage", 1)
+        # beta_rt_sigma = pm.HalfNormal("beta_rt_sigma", sigma=beta_rt_shrinkage, shape=n_region_years)
+        # beta_rt = pm.Normal("beta_rt", mu=0.0, sigma=beta_rt_sigma, shape=n_region_years)
+        # # State-year deviation from region-year
+        # eps_st_sigma = pm.Deterministic("eps_st_sigma", beta_rt_sigma[state_year_to_region_year]/2)
+        # eps_st = pm.Normal("eps_st", mu=0.0, sigma=eps_st_sigma, shape=n_state_years)
+        # # Final state-year effect
+        # beta_st = pm.Deterministic("beta_st", beta_rt[region_year_idx] + eps_st[state_year_idx])
+
+        # \delta_{s,t} ~ Logit-Normal(\mu_{s,t}, \sigma)
         # logit_delta_sigma is important because it controls the overall noise levels on the serotyped cases (lower = less noise)
         # it also controls an important trade-off in this model: the relationship between N_total and N_typed is not perfectly linear, i.e. you can't fit both N_total and delta_st perfectly
         # Values of 0.001-0.002 sacrifices delta_st for a better fit to N_total, while a value of 0.001 gives a good fit to delta_st but a poorer fit to N_typed an too much uncertainty
-        # Opposed
         logit_delta_sigma = pm.HalfNormal("logit_delta_sigma", sigma=0.002) 
-        logit_delta = pm.Normal("logit_delta", mu=logit_mu, sigma=logit_delta_sigma, observed=logit_delta_obs)
+        logit_delta = pm.Normal("logit_delta", mu=beta + beta_st, sigma=logit_delta_sigma, observed=np.log(delta_obs / (1 - delta_obs)))
         delta_st = pm.Deterministic("delta_st", pm.math.sigmoid(logit_delta))
 
         # N^*_{s,t} ~ Binomial(N_{total,s,t}, \delta_{s,t})
         N_typed_latent = pm.Binomial("N_typed_latent", n=N_total, p=delta_st, observed=N_typed)
 
-        # N^*_{s,t} ~ Poisson(N_{total,s,t} * \delta_{s,t}) --> Less brutal likelihood than Binomial
-        #lambda_ = pm.Deterministic("lambda_", N_total * delta_st)
-        #N_typed_latent = pm.Poisson("N_typed_latent", mu=lambda_, observed=N_typed)
-
         # --- Subtype Composition Model ---
         # p_{i,s,t} ~ Dirichlet(\theta_{i,s,t})
-        # log 𝜃_{i,s,t} = 𝛼 + 𝛼_s + 𝛼_t + 𝛼_i + 𝛼_{i,t} + 𝛼_{s,i}    
+        # log \theta_{i,s,t} =  \sum_{k=1}^p (1/k)*(\alpha_{i,s,t-k} + \kappa_{i,s,t-k}) + \epsilon_{i,s,t}
+        # \kappa_{i,s,t-k} ~ Normal(0, \sigma^2 * f_{corr} * chol(Q))   # spatially correlated noise
+        # \epsilon_{i,s,t} ~ Normal(0, \sigma^2 * (1-f_{corr}))         # spatially uncorrelated noise
 
         # Try to combine an AR(p) with a CAR prior on every timestep in the past
         ## Regularisation of the overall noise & split between spatially structured and unstructured noise
@@ -236,8 +265,7 @@ if CAR_per_lag:
         corr_sigma = pm.Deterministic("corr_sigma", (1 - proportion_uncorr) * total_sigma)
 
         ## Temporal correlation structure: Decaying weights rho_k = 1/(k**gamma_i) --> identifiable but I think this is too strict
-        #a,b = weak_beta_prior(critical_rho1(p,gamma))
-        gamma = pt.ones(n_serotypes) #pm.TruncatedNormal("gamma", mu=1, sigma=0.10, lower=0, shape=n_serotypes)
+        gamma = pt.ones(n_serotypes)
         first_lag = pm.Deterministic("first_lag", critical_rho1(p,gamma))
         rho = pm.Deterministic("rho", first_lag[:,None] / ((np.arange(1, p + 1)[None,:])**gamma[:,None]))
         AR_coefficients_sum = pm.Deterministic("AR_coefficients_sum", pt.sum(rho, axis=1))
@@ -371,16 +399,37 @@ else:
         # \beta (global intercept)
         beta = pm.Normal("beta", mu=-4.5, sigma=1.5)
 
-        # \beta_{s,t}: State-year-specific typing effort random effect: \beta_{s,t} = \beta_{r[s],t} + \epsilon_{s,t}
-        # Region-year effect
-        beta_rt_shrinkage = pm.Exponential("beta_rt_shrinkage", 1)
-        beta_rt_sigma = pm.HalfNormal("beta_rt_sigma", sigma=beta_rt_shrinkage, shape=n_region_years)
-        beta_rt = pm.Normal("beta_rt", mu=0.0, sigma=beta_rt_sigma, shape=n_region_years)
-        # State-year deviation from region-year
-        eps_st_sigma = pm.Deterministic("eps_st_sigma", beta_rt_sigma[state_year_to_region_year]/2)
-        eps_st = pm.Normal("eps_st", mu=0.0, sigma=eps_st_sigma, shape=n_state_years)
-        # Final state-year effect
-        beta_st = pm.Deterministic("beta_st", beta_rt[region_year_idx] + eps_st[state_year_idx])
+        # \beta_{s,t}: State-year-specific typing effort random effect with spatial hierarchy
+        # --- 3-level hierarchy: Brazil-year -> Region-year -> State-year ---
+
+        # Base noise for all typing effort effects
+        beta_y_sigma_shrinkage = pm.HalfNormal("beta_y_sigma_shrinkage", sigma=1.0)
+        beta_y_sigma = pm.HalfNormal("beta_y_sigma", sigma=beta_y_sigma_shrinkage, shape=n_years)
+        # Ratio of Brazil-year to region-year variation (push toward 0)
+        r_ratio = pm.HalfNormal("r_ratio", sigma=1.0)
+        # Ratio of Brazil-year to state-year variation (push toward 0)
+        s_ratio = pm.HalfNormal("s_ratio", sigma=1.0)
+        # Level 1: Brazil-year effects
+        beta_y = pm.Normal("beta_y", mu=0.0, sigma=beta_y_sigma, shape=n_years)
+        # Level 2: Region-year effects (as deviation from Brazil-year)
+        sigma_ry = pm.Deterministic("sigma_ry", r_ratio * beta_y_sigma[year_to_region_year])
+        eps_ry = pm.Normal("eps_ry", mu=0, sigma=sigma_ry, shape=n_region_years)
+        # Level 3: State-year effects (as deviation from region-year)
+        sigma_sy = pm.Deterministic("sigma_sy", s_ratio * beta_y_sigma[year_to_state_year])
+        eps_sy = pm.Normal("eps_sy", mu=0, sigma=sigma_sy, shape=n_state_years)
+        # Final latent effort
+        beta_st = pm.Deterministic("beta_st", beta_y[year_idx] + eps_ry[region_year_idx] + eps_sy[state_year_idx])
+
+        # # \beta_{s,t}: State-year-specific typing effort random effect: \beta_{s,t} = \beta_{r[s],t} + \epsilon_{s,t}
+        # # Region-year effect
+        # beta_rt_shrinkage = pm.Exponential("beta_rt_shrinkage", 1)
+        # beta_rt_sigma = pm.HalfNormal("beta_rt_sigma", sigma=beta_rt_shrinkage, shape=n_region_years)
+        # beta_rt = pm.Normal("beta_rt", mu=0.0, sigma=beta_rt_sigma, shape=n_region_years)
+        # # State-year deviation from region-year
+        # eps_st_sigma = pm.Deterministic("eps_st_sigma", beta_rt_sigma[state_year_to_region_year]/2)
+        # eps_st = pm.Normal("eps_st", mu=0.0, sigma=eps_st_sigma, shape=n_state_years)
+        # # Final state-year effect
+        # beta_st = pm.Deterministic("beta_st", beta_rt[region_year_idx] + eps_st[state_year_idx])
 
         # # 𝛿_{s,t} ~ 𝐵𝑒𝑡𝑎(𝜇_{s,t}.𝜙, (1 − 𝜇_{s,t}).𝜙)
         # # logit(𝜇_{s,t})
@@ -402,10 +451,6 @@ else:
 
         # N^*_{s,t} ~ Binomial(N_{total,s,t}, \delta_{s,t})
         N_typed_latent = pm.Binomial("N_typed_latent", n=N_total, p=delta_st, observed=N_typed)
-
-        # N^*_{s,t} ~ Poisson(N_{total,s,t} * \delta_{s,t}) --> Less brutal likelihood than Binomial
-        #lambda_ = pm.Deterministic("lambda_", N_total * delta_st)
-        #N_typed_latent = pm.Poisson("N_typed_latent", mu=lambda_, observed=N_typed)
 
         # --- Subtype Composition Model ---
         # p_{i,s,t} ~ Dirichlet(\theta_{i,s,t})
@@ -433,9 +478,7 @@ else:
             pass
 
         ## Priors for spatial correlation strength (a)
-        # For strength, use a decreasing linear function on log scale:
-        log_a = 4.5 #pm.Normal("log_a", mu=4.5, sigma=1.5)
-        a_car = pm.Deterministic("a_car", pm.math.sigmoid(log_a))  
+        a_car = 1
 
         # Pair-wise kernel first
         # D_shared: (n_states, n_states)
@@ -525,15 +568,13 @@ else:
 
         Y_obs = pm.Multinomial("Y_obs", n=N_typed_latent, p=p, observed=Y_multinomial)
 
-
-
 ########################
 ## Running the model  ##
 ########################
 
 # NUTS
 with model:
-    trace = pm.sample(500, tune=1000, target_accept=0.999, chains=chains, cores=chains, init='adapt_diag', progressbar=True)
+    trace = pm.sample(300, tune=200, target_accept=0.999, chains=chains, cores=chains, init='adapt_diag', progressbar=True)
 
 # Plot posterior predictive checks
 with model:
@@ -549,13 +590,13 @@ arviz.to_netcdf(ppc, f"{output_folder}/ppc.nc")
 
 # Traceplot
 if CAR_per_lag:
-    variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
+    variables2plot = ['beta', 'beta_y', 'beta_y_sigma_shrinkage', 'beta_y_sigma', 'r_ratio', 's_ratio',
                     'total_sigma_shrinkage', 'total_sigma', 'proportion_uncorr', 'a_slope', 'AR_init',
                     ]
     if distance_matrix:
         variables2plot += ['zeta_intercept', 'zeta_slope']
 else:
-    variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
+    variables2plot = ['beta', 'beta_y', 'beta_y_sigma_shrinkage', 'beta_y_sigma', 'r_ratio', 's_ratio',
                     'total_sigma_shrinkage', 'total_sigma', 'proportion_uncorr', 'AR_init',
                     ]
     if distance_matrix:
