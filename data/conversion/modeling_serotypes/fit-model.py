@@ -1,4 +1,6 @@
+import os
 import arviz
+import argparse
 import pymc as pm
 import numpy as np
 import pandas as pd
@@ -10,11 +12,37 @@ import pytensor.tensor as pt
 pytensor.config.cxx = '/usr/bin/clang++'
 pytensor.config.on_opt_error = "ignore"
 
+# helper function for argument parsing
+def str_to_bool(value):
+    """Convert string arguments to boolean (for SLURM environment variables)."""
+    return value.lower() in ["true", "1", "yes"]
+
+# arguments determine the model + data combo used to forecast
+# How to run: python fit-model.py -ID test -p 2 -distance_matrix False -CAR_per_lag False
+parser = argparse.ArgumentParser()
+parser.add_argument("-chains", type=int, help="Number of parallel chains.", default=4)
+parser.add_argument("-ID", type=str, help="Sampler output name.")
+parser.add_argument("-p", type=int, help="Order of AR(p) process.")
+parser.add_argument("-distance_matrix", type=str_to_bool, help="Use distance matrix versus adjacency matrix.")
+parser.add_argument("-CAR_per_lag", type=str_to_bool, help="Use one spatial innovation process per AR lag versus one spatial innovation overall.")
+args = parser.parse_args()
+
+# assign to desired variables
+chains = args.chains
+ID = args.ID
+p = args.p
+distance_matrix = args.distance_matrix
+CAR_per_lag = args.CAR_per_lag
+
+# Make folder structure
+output_folder=f'AR({p})/distance_matrix-{distance_matrix}/CARperlag-{CAR_per_lag}/{ID}_{datetime.today().strftime("%Y-%m-%d")}' # Path to backend
+# check if samples folder exists, if not, make it
+if not os.path.exists(output_folder):
+    os.makedirs(output_folder)
 
 ########################
 ## Preparing the data ##
 ########################
-
 
 # Distance matrix
 # ~~~~~~~~~~~~~~~
@@ -64,10 +92,9 @@ assert all(col in df.columns for col in required_cols)
 # 2. Sort for safety
 df = df.sort_values(["date", "UF"]).reset_index(drop=True)
 
-# 3. Limit to publicaly available data
-df = df[df['date'] > datetime(2000,1,1)]
+df = df[df['date'] > datetime(1999,1,1)]
 
-# 4. Factorize states and time
+# 3. Factorize states and time
 df["state_idx"], _ = pd.factorize(df["UF"])
 df["month_idx"], _ = pd.factorize(df["date"])
 
@@ -134,207 +161,407 @@ n_regions = len(region_labels)
 # This assumes each state-year belongs to exactly 1 region-year
 state_year_to_region_year = df.groupby("state_year_idx")["region_year_idx"].first().sort_index().tolist()
 
-########################
-## Preparing the model##
-########################
+# Maps years to state-years
+year_to_state_year = (
+    df[["state_year_idx", "year_idx"]]
+    .drop_duplicates()
+    .sort_values("state_year_idx")
+    .set_index("state_year_idx")["year_idx"]
+    .to_numpy()
+)
 
-with pm.Model() as dengue_model:
+# Maps years to region-years
+year_to_region_year = (
+    df[["region_year_idx", "year_idx"]]
+    .drop_duplicates()
+    .sort_values("region_year_idx")
+    .set_index("region_year_idx")["year_idx"]
+    .to_numpy()
+)
 
-    # --- Typing Effort Model ---
-    # (original plan)
-    # N^*_{s,t} ~ Binomial(N_{total,s,t}, \delta_{s,t}),
-    # where N_{total,s,t} the observed total dengue incidence and \delta_{s,t} the fraction that gets subtyped.
-    #
-    # 𝛿_{s,t} ~ 𝐵𝑒𝑡𝑎(𝜇_{s,t}.𝜙, (1 − 𝜇_{s,t}).𝜙)
-    # logit(𝜇_{s,t}) = \beta + \beta_s + \beta_t + \sum_j \beta_j X_{s,j}
+#########################
+## Preparing the model ##
+#########################
 
-    # \beta (global intercept)
-    beta = pm.Normal("beta", mu=-4.5, sigma=1.5)
+def critical_rho1(p, gamma):
+    """Compute the coefficient of the first lag so that the sum of p AR coefficients: rho_k = 1/k**gamma sum to zero; resulting in a non-stationary process"""
+    return 1 / pt.sum(1 / np.arange(1, p + 1)[None,:]**gamma[:,None], axis=1)
 
-    # \beta_{s,t}: State-year-specific typing effort random effect: \beta_{s,t} = \beta_{r[s],t} + \epsilon_{s,t}
-    # Region-year effect
-    beta_rt_shrinkage = pm.Exponential("beta_rt_shrinkage", 1)
-    beta_rt_sigma = pm.HalfNormal("beta_rt_sigma", sigma=beta_rt_shrinkage, shape=n_region_years)
-    beta_rt = pm.Normal("beta_rt", mu=0.0, sigma=beta_rt_sigma, shape=n_region_years)
-    # State-year deviation from region-year
-    eps_st_sigma = pm.Deterministic("eps_st_sigma", beta_rt_sigma[state_year_to_region_year]/2)
-    eps_st = pm.Normal("eps_st", mu=0.0, sigma=eps_st_sigma, shape=n_state_years)
-    # Final state-year effect
-    beta_st = pm.Deterministic("beta_st", beta_rt[region_year_idx] + eps_st[state_year_idx])
+if CAR_per_lag:
+
+    #####################################################################
+    ## Model 1: spatially correlated innovation (CAR) per temporal lag ##
+    #####################################################################
+
+    with pm.Model() as model:
+
+        # --- Typing Effort Model ---
+
+        # N^*_{s,t} ~ Binomial(N_{total,s,t}, \delta_{s,t}),
+        # \delta_{s,t} ~ Logit-Normal\mu_{s,t}, \sigma) OR 𝛿_{s,t} ~ Beta(\mu_{s,t}.\phi, (1 − \mu_{s,t}).\phi)
+        # logit(\mu_{s,t}) = \beta + (\beta_{r(s),y} + \epsilon_{s,y}
+        # where N_{total,s,t} the observed total dengue incidence, \delta_{s,t} the fraction that gets subtyped, and,
+        # \beta_{r(s),y} ~ Normal(0, \sigma_{bry})
+        # \epsilon_{s,y} ~ Normal(0, 0.5 * \sigma_{bry}(s))
+        # \sigma_{bry} ~ Halfnormal(sigma_{b, shrinkage})
+        # \sigma_{b, shrinkage} ~ Exponential(1)
+        
+        # \beta (global intercept)
+        beta = pm.Normal("beta", mu=-4.5, sigma=1.5)
+
+        # \beta_{s,t}: State-year-specific typing effort random effect: \beta_{s,t} = \beta_{r[s],t} + \epsilon_{s,t}
+        # Region-year effect
+        beta_rt_shrinkage = pm.HalfNormal("beta_rt_shrinkage", 1)
+        beta_rt_sigma = pm.HalfNormal("beta_rt_sigma", sigma=beta_rt_shrinkage, shape=n_region_years)
+        beta_rt = pm.Normal("beta_rt", mu=0.0, sigma=beta_rt_sigma, shape=n_region_years)
+        # State-year deviation from region-year
+        ratio_sigma = pm.Beta("ratio_sigma", alpha=1, beta=2)
+        eps_st_sigma = pm.Deterministic("eps_st_sigma", ratio_sigma * beta_rt_sigma[state_year_to_region_year])
+        eps_st = pm.Normal("eps_st", mu=0.0, sigma=eps_st_sigma, shape=n_state_years)
+        # Final state-year effect
+        beta_st = pm.Deterministic("beta_st", beta_rt[region_year_idx] + eps_st[state_year_idx])
+
+        # \delta_{s,t} ~ Logit-Normal(\mu_{s,t}, \sigma)
+        # logit_delta_sigma is important because it controls the overall noise levels on the serotyped cases (lower = less noise)
+        # it also controls an important trade-off in this model: the relationship between N_total and N_typed is not perfectly linear, i.e. you can't fit both N_total and delta_st perfectly
+        # Values of 0.001-0.002 sacrifices delta_st for a better fit to N_total, while a value of 0.001 gives a good fit to delta_st but a poorer fit to N_typed an too much uncertainty
+        logit_delta_sigma = pm.HalfNormal("logit_delta_sigma", sigma=0.002) 
+        logit_delta = pm.Normal("logit_delta", mu=beta + beta_st, sigma=logit_delta_sigma, observed=np.log(delta_obs / (1 - delta_obs)))
+        delta_st = pm.Deterministic("delta_st", pm.math.sigmoid(logit_delta))
+
+        # N^*_{s,t} ~ Binomial(N_{total,s,t}, \delta_{s,t})
+        N_typed_latent = pm.Binomial("N_typed_latent", n=N_total, p=delta_st, observed=N_typed)
+
+        # --- Subtype Composition Model ---
+        # p_{i,s,t} ~ Dirichlet(\theta_{i,s,t})
+        # log \theta_{i,s,t} =  \sum_{k=1}^p (1/k)*(\alpha_{i,s,t-k} + \kappa_{i,s,t-k}) + \epsilon_{i,s,t}
+        # \kappa_{i,s,t-k} ~ Normal(0, \sigma^2 * f_{corr} * chol(Q))   # spatially correlated noise
+        # \epsilon_{i,s,t} ~ Normal(0, \sigma^2 * (1-f_{corr}))         # spatially uncorrelated noise
+
+        # Try to combine an AR(p) with a CAR prior on every timestep in the past
+        ## Regularisation of the overall noise & split between spatially structured and unstructured noise
+        total_sigma_shrinkage = pm.HalfNormal("total_sigma_shrinkage", sigma=0.001)
+        total_sigma = pm.HalfNormal("total_sigma", sigma=total_sigma_shrinkage, shape=n_serotypes)
+        proportion_uncorr = pm.Beta("proportion_uncorr", alpha=1, beta=5)  # proportion of noise that is unstructured (encourages structured noise)
+        uncorr_sigma = pm.Deterministic("uncorr_sigma", proportion_uncorr * total_sigma)
+        corr_sigma = pm.Deterministic("corr_sigma", (1 - proportion_uncorr) * total_sigma)
+
+        ## Temporal correlation structure: Decaying weights rho_k = 1/(k**gamma_i) --> identifiable but I think this is too strict
+        gamma = pt.ones(n_serotypes)
+        first_lag = pm.Deterministic("first_lag", critical_rho1(p,gamma))
+        rho = pm.Deterministic("rho", first_lag[:,None] / ((np.arange(1, p + 1)[None,:])**gamma[:,None]))
+        AR_coefficients_sum = pm.Deterministic("AR_coefficients_sum", pt.sum(rho, axis=1))
+
+        ## Priors for spatial correlation radius (zeta)
+        if distance_matrix: 
+            ### Base radius and linear slope per lag
+            zeta_intercept = pm.HalfNormal("zeta_intercept", sigma=100)
+            zeta_slope = pm.HalfNormal("zeta_slope", sigma=100)
+            ### Construct linearly increasing radius over lags: zeta_lag = intercept + slope * lag
+            lags = pt.arange(p)
+            zeta_car = pm.Deterministic("zeta_car", zeta_intercept + zeta_slope * lags)
+            ### expand to (n_serotypes, p , 1)
+            zeta_expanded = pt.repeat(zeta_car[None, :], n_serotypes, axis=0)[:, :, None, None] 
+        else:
+            zeta_expanded = -1 * pt.ones(shape=(n_serotypes, p, 1, 1))
+            pass
+
+        ## Priors for spatial correlation strength (a)
+        a_car = pt.ones(p)
+
+        # Pair-wise kernel first
+        # D_shared: (n_states, n_states)
+        # zeta_car: (n_serotypes, p)
+        # We need to broadcast D_shared against zeta
+        D_shared = pm.MutableData("D_shared", D)
+        D_expanded = D_shared[None, None, :, :]
+        W = pt.exp(-D_expanded / zeta_expanded)
+        # Construct degree tensor (matrix equivalent: row sums of weighted distance matrix on diagonal of eye(n_states))
+        degree = pt.sum(W, axis=-1)[:, :, :, None]
+        I = pt.eye(n_states)[None, None, :, :]
+        D = I * degree
+        jitter = 1e-6 * pt.diag(pt.ones(n_states))
+        jitter = jitter[None, None, :, :]
+        Q = D - a_car[None,:,None, None] * W + jitter # Q shape == (n_serotypes, p, n_states, n_states)
+
+        # Compute the Cholesky of Q, scale with noise and reshape
+        chol = pt.slinalg.cholesky(Q)
+        chol = chol * corr_sigma[:, None, None, None]  # broadcast over p and states
+        chol = chol.transpose((1, 0, 2, 3)) # shape == (p, n_serotypes, n_states, n_states) --> makes more sense
+        
+        # Initialise AR(p) initial condition
+        AR_init = pm.Normal("AR_init", mu=0, sigma=1, shape=(p, n_serotypes, n_states))
+
+        # Initialise spatial innovation noise (one per lag)
+        epsilon_corr = pm.Normal("epsilon_corr", 0, 1, shape=(n_months - p, p, n_serotypes, n_states))
+
+        # Initialise random noise
+        epsilon_uncorr = pm.Normal("epsilon_uncorr", mu=0, sigma=1, shape=(n_months - p, n_serotypes, n_states))
+
+        # Define the recursion of the AR(p) process
+        def ARp_step(epsilon_corr_t, epsilon_uncorr_t, previous_vals, rho, chol, uncorr_sigma):
+            """
+            previous_vals: (p, n_serotypes, n_states)
+            epsilon_t: (p, n_serotypes, n_states)
+            epsilon_uncorr_t: (n_serotypes, n_states)
+            """
+            contributions = []
+            for lag in range(p):
+                # Add spatial innovation at lag p to state at lag p
+                state_plus_noise = previous_vals[lag] + pt.batched_dot(epsilon_corr_t[lag], chol[lag]) # (n_serotypes, n_states)
+                # Multiply by the temporal weight rho_k (serotype-specific) --> spatial innovation size declines over time
+                weighted = rho[:, lag][:, None] * state_plus_noise
+                contributions.append(weighted)
+
+            # Sum weighted state and spatial innovation over lags
+            new_vals = sum(contributions)  # (n_serotypes, n_states)
+
+            # Finally add the spatially-uncorrelated noise
+            uncorr_noise = epsilon_uncorr_t * uncorr_sigma[:, None]
+            new_vals += uncorr_noise
+
+            # Shift lag window: insert new_vals at position 0
+            updated_vals = pt.concatenate(
+                [new_vals[None, :, :], previous_vals[:-1]], axis=0
+            )  # (p, n_serotypes, n_states)
+
+            return updated_vals
+        
+        sequences, _ = pytensor.scan(
+            fn=ARp_step,
+            sequences=[epsilon_corr, epsilon_uncorr],
+            outputs_info=AR_init,
+            non_sequences=[rho, chol, uncorr_sigma],
+        )
+
+        # sequences: (n_months - p, p, n_serotypes, n_states)
+        # alpha_init: (p, n_serotypes, n_states)
+        theta_log_final = pt.concatenate([pt.repeat(AR_init[None, :, :, :], p, axis=0), sequences], axis=0)
+        # Step 3: slice lag zero (p=0) over full time axis
+        theta_log_final = theta_log_final[:, 0, :, :]  # shape (n_months, n_serotypes, n_states)
+        # Step 4: convert to flat format
+        theta_log_final_flat = theta_log_final.reshape((len(df), n_serotypes))
+
+        # Construct log θ_{i,s,t}
+        theta_log = (
+            theta_log_final_flat
+        )  # Result: shape (n_obs, 4)
+        
+        # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+    
+        # Dirichlet prior for subtype fractions
+        p = pm.Deterministic("p", pm.math.softmax(theta_log, axis=1))
+
+        # --- Observed subtyped incidences ---
+        # Y_{i,s,t} ~ Multinomial(N^*_{s,t}, p_{i,s,t})
+
+        Y_obs = pm.Multinomial("Y_obs", n=N_typed_latent, p=p, observed=Y_multinomial)
+
+else:
+
+    ########################################################
+    ## Model 2: one spatially correlated innovation (CAR) ##
+    ########################################################
+
+    with pm.Model() as model:
+
+        # --- Typing Effort Model ---
+        # (original plan)
+        # N^*_{s,t} ~ Binomial(N_{total,s,t}, \delta_{s,t}),
+        # where N_{total,s,t} the observed total dengue incidence and \delta_{s,t} the fraction that gets subtyped.
+        #
+        # 𝛿_{s,t} ~ 𝐵𝑒𝑡𝑎(𝜇_{s,t}.𝜙, (1 − 𝜇_{s,t}).𝜙)
+        # logit(𝜇_{s,t}) = \beta + \beta_s + \beta_t + \sum_j \beta_j X_{s,j}
+
+        # \beta (global intercept)
+        beta = pm.Normal("beta", mu=-4.5, sigma=1.5)
+
+        # \beta_{s,t}: State-year-specific typing effort random effect: \beta_{s,t} = \beta_{r[s],t} + \epsilon_{s,t}
+        # Region-year effect
+        beta_rt_shrinkage = pm.HalfNormal("beta_rt_shrinkage", 1)
+        beta_rt_sigma = pm.HalfNormal("beta_rt_sigma", sigma=beta_rt_shrinkage, shape=n_region_years)
+        beta_rt = pm.Normal("beta_rt", mu=0.0, sigma=beta_rt_sigma, shape=n_region_years)
+        # State-year deviation from region-year
+        ratio_sigma = pm.Beta("ratio_sigma", alpha=1, beta=2)
+        eps_st_sigma = pm.Deterministic("eps_st_sigma", ratio_sigma * beta_rt_sigma[state_year_to_region_year])
+        eps_st = pm.Normal("eps_st", mu=0.0, sigma=eps_st_sigma, shape=n_state_years)
+        # Final state-year effect
+        beta_st = pm.Deterministic("beta_st", beta_rt[region_year_idx] + eps_st[state_year_idx])
+
+        # # 𝛿_{s,t} ~ 𝐵𝑒𝑡𝑎(𝜇_{s,t}.𝜙, (1 − 𝜇_{s,t}).𝜙)
+        # # logit(𝜇_{s,t})
+        # mu = pm.Deterministic("mu", pm.math.sigmoid(beta + beta_st))
+        # phi = pm.HalfNormal("phi", sigma=5.0)
+        # alpha_beta = mu * phi
+        # beta_beta = (1 - mu) * phi
+        # delta_st = pm.Beta("delta_st", alpha=alpha_beta, beta=beta_beta, observed=delta_obs)
+        # Alternative: model serotyped fraction as a logit-normal since beta is close to zero
+        logit_delta_obs = np.log(delta_obs / (1 - delta_obs)) 
+        logit_mu = beta  + beta_st
+        # logit_delta_sigma is important because it controls the overall noise levels on the serotyped cases (lower = less noise)
+        # it also controls an important trade-off in this model: the relationship between N_total and N_typed is not perfectly linear, i.e. you can't fit both N_total and delta_st perfectly
+        # Values of 0.001-0.002 sacrifices delta_st for a better fit to N_total, while a value of 0.001 gives a good fit to delta_st but a poorer fit to N_typed an too much uncertainty
+        # Opposed
+        logit_delta_sigma = pm.HalfNormal("logit_delta_sigma", sigma=0.002) 
+        logit_delta = pm.Normal("logit_delta", mu=logit_mu, sigma=logit_delta_sigma, observed=logit_delta_obs)
+        delta_st = pm.Deterministic("delta_st", pm.math.sigmoid(logit_delta))
+
+        # N^*_{s,t} ~ Binomial(N_{total,s,t}, \delta_{s,t})
+        N_typed_latent = pm.Binomial("N_typed_latent", n=N_total, p=delta_st, observed=N_typed)
+
+        # --- Subtype Composition Model ---
+        # p_{i,s,t} ~ Dirichlet(\theta_{i,s,t})
+        # log 𝜃_{i,s,t} = 𝛼 + 𝛼_s + 𝛼_t + 𝛼_i + 𝛼_{i,t} + 𝛼_{s,i}    
+
+        ## Regularisation of the overall noise & split between spatially structured and unstructured noise
+        total_sigma_shrinkage = pm.HalfNormal("total_sigma_shrinkage", sigma=0.001)
+        total_sigma = pm.HalfNormal("total_sigma", sigma=total_sigma_shrinkage, shape=n_serotypes)
+        proportion_uncorr = pm.Beta("proportion_uncorr", alpha=1, beta=5)  # proportion of noise that is unstructured (encourages structured noise)
+        uncorr_sigma = pm.Deterministic("uncorr_sigma", proportion_uncorr * total_sigma)
+        corr_sigma = pm.Deterministic("corr_sigma", (1 - proportion_uncorr) * total_sigma)
+
+        ## Temporal correlation structure: Decaying weights rho_k = 1/(k**gamma_i) --> identifiable but I think this is too strict
+        gamma = pt.ones(n_serotypes)
+        first_lag = pm.Deterministic("first_lag", critical_rho1(p,gamma))
+        rho = pm.Deterministic("rho", first_lag[:,None] / ((np.arange(1, p + 1)[None,:])**gamma[:,None]))
+        AR_coefficients_sum = pm.Deterministic("AR_coefficients_sum", pt.sum(rho, axis=1))
+
+        ## Priors for spatial correlation radius (zeta)
+        if distance_matrix: 
+            zeta = pm.HalfNormal("zeta", sigma=100)
+        else:
+            zeta = -1
+            pass
+
+        ## Priors for spatial correlation strength (a)
+        a_car = 1
+
+        # Pair-wise kernel first
+        # D_shared: (n_states, n_states)
+        # zeta_car: (n_serotypes, p)
+        # We need to broadcast D_shared against zeta
+        D_shared = pm.MutableData("D_shared", D)
+        D_expanded = D_shared[None, :, :]
+        W = pt.exp(-D_expanded / zeta)
+        # Construct degree tensor (matrix equivalent: row sums of weighted distance matrix on diagonal of eye(n_states))
+        degree = pt.sum(W, axis=-1)[:, :, None]
+        I = pt.eye(n_states)[None, :, :]
+        D = I * degree
+        # Q = D - a * W + jitter
+        jitter = 1e-6 * pt.diag(pt.ones(n_states))
+        jitter = jitter[None, :, :]
+        Q = D - a_car * W + jitter
+        # Q shape == (n_serotypes, p, n_states, n_states)
+
+        # Compute the Cholesky of Q
+        chol = pt.slinalg.cholesky(Q)
+
+        # Scale with the noise
+        chol = chol * corr_sigma[:, None, None]  # broadcast over p and states
+
+        # Initialise AR(p) initial condition
+        AR_init = pm.Normal("AR_init", mu=0, sigma=1, shape=(p, n_serotypes, n_states))
+
+        # Initialise spatial innovation noise (one per lag)
+        epsilon_corr = pm.Normal("epsilon_corr", 0, 1, shape=(n_months - p, n_serotypes, n_states))
+
+        # Initialise random noise
+        epsilon_uncorr = pm.Normal("epsilon_uncorr", mu=0, sigma=1, shape=(n_months - p, n_serotypes, n_states))
 
 
-    # \beta_{s,t}: State-year-specific typing effort random effect
-    # sigma_st = pm.HalfNormal("sigma_st", sigma=2)
-    # beta_st = pm.Normal("beta_st", mu=0.0, sigma=sigma_st, shape=n_state_years)
+        def arp_step(epsilon_corr_t, epsilon_uncorr_t, previous_vals, rho, chol, uncorr_sigma):
+            """
+            previous_vals: (p, n_serotypes, n_states)
+            epsilon_t: (n_serotypes, n_states)
+            epsilon_uncorr_t: (n_serotypes, n_states)
+            """
 
-    # \beta_s (CAR prior)
-    # sigma_car = pm.HalfNormal("sigma_car", sigma=1)
-    # beta_s = pm.MvNormal("beta_s", mu=np.zeros(n_states), cov=sigma_car**2 * np.linalg.inv(Q), shape=n_states) #--> CAR prior
+            spatial_noise = pt.batched_dot(epsilon_corr_t, chol)
+            AR_noise = epsilon_uncorr_t * uncorr_sigma[:, None]
+            AR_mean = []
+            for lag in range(p):
+                # Apply temporal weight rho_k (serotype-specific)
+                AR_mean.append(rho[:, lag][:, None] * previous_vals[lag])
 
-    # \beta_t (random walk with drift) 
-    # Can be expanded to include piecewise-continuous drift or steps in surveillance efforts
-    # sigma_time = pm.HalfNormal("sigma_time", sigma=1)
-    # drift = pm.Normal("drift", mu=0.0, sigma=1)
-    # beta_t_raw = pm.GaussianRandomWalk("beta_t_raw", sigma=sigma_time, shape=n_months, init_dist=pm.Normal.dist(mu=0,sigma=1))
-    # drift_vector = drift * np.arange(n_months)
-    # beta_t = pm.Deterministic("beta_t", beta_t_raw + drift_vector)
+            # Sum weighted AR and spatial noise over lags
+            new_vals = sum(AR_mean) + spatial_noise + AR_noise  # (n_serotypes, n_states)
 
-    # \sum_j \beta_j X_{s,j} (covariates)
-    # sigma_cov = pm.HalfNormal("sigma_cov", sigma=1.0, shape=n_covariates)
-    # beta_cov = pm.Normal("beta_cov", mu=0.0, sigma=sigma_cov, shape=n_covariates)
-    # covariates = pm.math.dot(X[state_idx], beta_cov)
+            # Shift lag window: insert new_vals at position 0
+            updated_vals = pt.concatenate(
+                [new_vals[None, :, :], previous_vals[:-1]], axis=0
+            )  # (p, n_serotypes, n_states)
 
-    # # logit(𝜇_{s,t})
-    # mu = pm.Deterministic("mu", pm.math.sigmoid(beta + beta_st))
-    # # 𝛿_{s,t} ~ 𝐵𝑒𝑡𝑎(𝜇_{s,t}.𝜙, (1 − 𝜇_{s,t}).𝜙)
-    # phi = pm.HalfNormal("phi", sigma=100.0)
-    # alpha_beta = mu * phi 
-    # beta_beta = (1 - mu) * phi 
-    # delta_st = pm.Beta("delta_st", alpha=alpha_beta, beta=beta_beta, observed=delta_obs)
+            return updated_vals
+        
+        sequences, _ = pytensor.scan(
+            fn=arp_step,
+            sequences=[epsilon_corr, epsilon_uncorr],
+            outputs_info=AR_init,
+            non_sequences=[rho, chol, uncorr_sigma],
+        )
 
-    # Alternative: model serotyped fraction as a logit-normal since beta is close to zero
-    logit_delta_obs = np.log(delta_obs / (1 - delta_obs)) 
-    logit_mu = beta  + beta_st
-    # logit_delta_sigma is important because it controls the overall noise levels on the serotyped cases (lower = less noise)
-    # it also controls an important trade-off in this model: the relationship between N_total and N_typed is not perfectly linear, i.e. you can't fit both N_total and delta_st perfectly
-    # Values of 0.001-0.002 sacrifices delta_st for a better fit to N_total, while a value of 0.01 gives a good fit to delta_st but a poorer fit to N_typed an too much uncertainty
-    # Opposed
-    logit_delta_sigma = pm.HalfNormal("logit_delta_sigma", sigma=0.002) 
-    logit_delta = pm.Normal("logit_delta", mu=logit_mu, sigma=logit_delta_sigma, observed=logit_delta_obs)
-    delta_st = pm.Deterministic("delta_st", pm.math.sigmoid(logit_delta))
 
-    # N^*_{s,t} ~ Binomial(N_{total,s,t}, \delta_{s,t})
-    N_typed_latent = pm.Binomial("N_typed_latent", n=N_total, p=delta_st, observed=N_typed)
+        # sequences: (n_months - p, p, n_serotypes, n_states)
+        # AR_init: (p, n_serotypes, n_states)
+        theta_log_final = pt.concatenate([pt.repeat(AR_init[None, :, :, :], p, axis=0), sequences], axis=0)
+        # Step 3: slice lag zero (p=0) over full time axis
+        theta_log_final = theta_log_final[:, 0, :, :]  # shape (n_months, n_serotypes, n_states)
+        # Step 4: convert to flat format
+        theta_log_final_flat = theta_log_final.reshape((len(df), n_serotypes))
 
-    # --- Subtype Composition Model ---
-    # p_{i,s,t} ~ Dirichlet(\theta_{i,s,t})
-    # log 𝜃_{i,s,t} = 𝛼 + 𝛼_s + 𝛼_t + 𝛼_i + 𝛼_{i,t} + 𝛼_{s,i}    
+        # Construct log θ_{i,s,t}
+        theta_log = (
+            theta_log_final_flat
+        )  # Result: shape (n_obs, 4)
+        
+        # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+    
+        # Dirichlet prior for subtype fractions
+        p = pm.Deterministic("p", pm.math.softmax(theta_log, axis=1))
 
-    # Global intercept
-    # Changes \theta_{i,s,t} identically for every subtype --> Changes overall uncertainty
-    alpha = pm.Normal("alpha", mu=0.0, sigma=10.0)
+        # --- Observed subtyped incidences ---
+        # Y_{i,s,t} ~ Multinomial(N^*_{s,t}, p_{i,s,t})
 
-    # α_s: state-specific random effect
-    # Make uncertainty on subtype proportions state-dependent
-    alpha_s_sigma = pm.HalfNormal("alpha_s_sigma", sigma=1.0)
-    alpha_s = pm.Normal("alpha_s", mu=0.0, sigma=alpha_s_sigma, shape=n_states)
-
-    # α_t: global temporal RW(1)
-    # Make uncertainty on subtype proportions time-dependent --> shrinkage has little impact on speed of drifting
-    # Drift can grow or shrink uncertainty in the subtyping over time --> removed because no drift detected
-    # Took this term out while leaving α_{i,t} in and found out it's pretty much redundant
-    #alpha_t_sigma = pm.HalfNormal("alpha_t_sigma", sigma=rw_shrinkage)
-    #alpha_t = pm.GaussianRandomWalk("alpha_t", sigma=alpha_t_sigma, shape=n_months, init_dist=pm.Normal.dist(0, 0.1))
-
-    # α_i: serotype-specific baseline
-    # Model the time-independent Brasil-average subtype composition
-    alpha_i_sigma = pm.HalfNormal("alpha_i_sigma", sigma=1.0)
-    alpha_i = pm.Normal("alpha_i", mu=0.0, sigma=alpha_i_sigma, shape=n_serotypes)
-
-    # α_{i,t}: serotype-specific temporal trends as RW(1) -- unpooled 
-    # Allows the serotype distribution to vary over time
-    # Per-serotype standard deviations (with shrinkage)
-    rw_shrinkage = pm.HalfNormal("rw_shrinkage", sigma=0.00025) # Value: 0.0001 --> flat; still need to find the "sweet spot"; try 0.001 --> jiggly but good; try 0.0005 --> better & smoother; try 0.00025 --> smooth
-    alpha_it_sigma = pm.HalfNormal("alpha_it_sigma", sigma=rw_shrinkage, shape=n_serotypes)
-    # Per-serotype RW(1)
-    alpha_it_list = []
-    for i in range(n_serotypes):
-        a = pm.GaussianRandomWalk(f"alpha_it_{i}", sigma=alpha_it_sigma[i], shape=n_months, init_dist=pm.Normal.dist(mu=0, sigma=0.1))
-        alpha_it_list.append(a)
-    # Stack to shape (n_months, n_serotypes)
-    alpha_it = pm.Deterministic("alpha_it", pt.stack(alpha_it_list, axis=1))
-
-    # α_{s,i}: state-serotype spatial CAR structure with inferred distance kernel
-    # Models the spatial correlation between subtype compositions --> Improves fit!
-    ## Define variables
-    D_shared = pm.MutableData("D_shared", D)
-    a_car = pm.Beta("a_car", 3, 3)                      # --> Influences the strength of the correlation within the correlated neighbourhood --> 0 = no spatial correlation
-    ## Build distance weighted kernel
-    if distance_matrix:
-        zeta_car = pm.HalfNormal("zeta_car", sigma=300) # --> Influences how far the serotype composition neighbourhood stretches --> smaller = more local 
-        W = pt.exp(-D_shared / zeta_car)
-        W = pt.set_subtensor(W[pt.arange(W.shape[0]), pt.arange(W.shape[1])], 0.0)
-    else:
-        W = D_shared
-    ## Build degree matrix
-    degree_matrix = pt.diag(W.sum(axis=1))
-    ## Build precision matrix Q
-    Q = degree_matrix - a_car * W
-    Q = Q + 1e-3 * pt.eye(W.shape[0])  # Stabilization
-    ## Use in CAR prior
-    sigma_car = pm.HalfNormal("sigma_car", sigma=1, shape=n_serotypes) # Weakly informed because I don't want to shrink the spatial correlation too drastically
-    L_Q = pt.slinalg.cholesky(Q)
-    alpha_si_list = [
-        pm.MvNormal(f"alpha_si_{i}", mu=pt.zeros(n_states), chol=sigma_car[i] * L_Q, shape=n_states)
-        for i in range(n_serotypes)
-    ]
-    alpha_si = pm.Deterministic("alpha_si", pt.stack(alpha_si_list, axis=1))
-
-    # α_{i,t} (serotype-year-specific baseline) + α_{i,r,t} (serotype-region-year specific baseline) + α_{i,s,t} (serotype-state-year specific baseline)
-    # Final puzzle piece: OVERFIT! Allow the average serotype composition to change yearly by state but half the allowed stdev at every spatial level to avoid overfit.
-    # Models  serotype-by-state-by-year as a perturbation of serotype-by-region-by-year which is a perturbation of serotype-by-year
-    # First: serotype by year (with its own shrinkage)
-    alpha_i_year_sigma = pm.HalfNormal("alpha_i_year_sigma", sigma=0.002) # --> 0.001: Small impact; 0.005: Large impact (overfit). Controls the degree of overfitting
-    alpha_i_year = pm.Normal("alpha_i_year", mu=0.0, sigma=alpha_i_year_sigma, shape=(n_years, n_serotypes))
-    # Second: serotype by region by year as deviation from its respective year
-    eps_i_region_year_sigma = pm.Deterministic("eps_i_region_year_sigma", alpha_i_year_sigma/2)
-    eps_i_region_year = pm.Normal("eps_i_region_year", mu=0.0, sigma=eps_i_region_year_sigma, shape=(n_region_years, n_serotypes))
-    # Third: serotype by state by year as a deviation from its respective region
-    eps_i_state_year_sigma = pm.Deterministic("eps_i_state_year_sigma", eps_i_region_year_sigma/2)
-    eps_i_state_year = pm.Normal("eps_i_state_year", mu=0.0, sigma=eps_i_state_year_sigma, shape=(n_state_years, n_serotypes))
-    # Final serotype-region-year
-    alpha_i_state_year = pm.Deterministic("alpha_i_region_year", alpha_i_year[year_idx, :] + eps_i_region_year[region_year_idx, :] + eps_i_state_year[state_year_idx, :])
-
-    # Construct log θ_{i,s,t}
-    theta_log = (
-        alpha
-        + alpha_s[state_idx][:, None]               # shape (n_obs, 1)
-        #+ alpha_t[month_idx][:, None]               # shape (n_obs, 1)
-        + alpha_i[None, :]                          # shape (1, 4)
-        + alpha_it[month_idx, :]                    # shape (n_obs, 4)
-        + alpha_si[state_idx, :]                    # shape (n_obs, 4)
-        + alpha_i_state_year
-    )  # Result: shape (n_obs, 4)
-
-    # Dirichlet prior for subtype fractions
-    p = pm.Deterministic("p", pm.math.softmax(theta_log, axis=1))
-
-    # --- Observed subtyped incidences ---
-    # Y_{i,s,t} ~ Multinomial(N^*_{s,t}, p_{i,s,t})
-
-    Y_obs = pm.Multinomial("Y_obs", n=N_typed_latent, p=p, observed=Y_multinomial)
-
+        Y_obs = pm.Multinomial("Y_obs", n=N_typed_latent, p=p, observed=Y_multinomial)
 
 ########################
 ## Running the model  ##
 ########################
 
 # NUTS
-with dengue_model:
-    trace = pm.sample(100, tune=100, target_accept=0.99, chains=6, cores=6, init='auto', progressbar=True)
+with model:
+    trace = pm.sample(1000, tune=1000, target_accept=0.999, chains=chains, cores=chains, init='adapt_diag', progressbar=True)
 
 # Plot posterior predictive checks
-with dengue_model:
+with model:
     ppc = pm.sample_posterior_predictive(trace)
 arviz.plot_ppc(ppc)
-plt.savefig('ppc.pdf')
+plt.savefig(f'{output_folder}/ppc.pdf')
 plt.close()
 
+
 # Assume `trace` is the result of pm.sample()
-arviz.to_netcdf(trace, "trace.nc")
-arviz.to_netcdf(ppc, "ppc.nc")
+arviz.to_netcdf(trace, f"{output_folder}/trace.nc")
+arviz.to_netcdf(ppc, f"{output_folder}/ppc.nc")
 
 # Traceplot
-variables2plot = ['beta', 'beta_rt', 'beta_rt_shrinkage', 'beta_rt_sigma',
-                  'alpha', 'alpha_s', 'alpha_i', 'alpha_i_sigma', 'alpha_it_sigma', 'rw_shrinkage',
-                    'a_car', 'sigma_car', 'alpha_i_year_sigma', 'alpha_i_year'
-                ]
-if distance_matrix:
-    variables2plot += ['zeta_car',]
+if CAR_per_lag:
+    variables2plot = ['beta', 'beta_rt_shrinkage', 'beta_rt_sigma', 'beta_rt', 'ratio_sigma',
+                    'total_sigma_shrinkage', 'total_sigma', 'proportion_uncorr', 'AR_init',
+                    ]
+    if distance_matrix:
+        variables2plot += ['zeta_intercept', 'zeta_slope']
+else:
+    variables2plot = ['beta', 'beta_rt_shrinkage', 'beta_rt_sigma', 'beta_rt', 'ratio_sigma',
+                    'total_sigma_shrinkage', 'total_sigma', 'proportion_uncorr', 'AR_init',
+                    ]
+    if distance_matrix:
+        variables2plot += ['zeta',]
+
 
 for var in variables2plot:
     arviz.plot_trace(trace, var_names=[var]) 
-    plt.savefig(f'trace-{var}_typing-effort-model.pdf')
+    plt.savefig(f'{output_folder}/trace-{var}_typing-effort-model.pdf')
     plt.close()
 
 # Print summary

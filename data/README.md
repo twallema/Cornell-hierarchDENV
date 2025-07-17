@@ -32,18 +32,26 @@ These data are partly confidential and can be found on the Bento lab box.
 
 + `adjacency_matrix.csv`: Contains a square origin-destination-type adjacency matrix of the Brasilian states.
 
-## DENV datasus
+### DENV datasus
 
 + `DENV-serotypes_1996-2025_monthly/weekly.csv`: Weekly or monthly total confirmed (not discarded) DENV cases, as well as number of serotyped cases per DENV serotype. Generated using `DENV_datasus_conversion.py`. 
 
+### Imputed DENV datasus
+
++ `DENV-serotypes-imputed_1996-2025_monthly.csv`: Monthly total confirmed DENV cases in every Brazilian UF (column: `DENV_total`), identical to `~/data/interim/DENV_datasus/DENV-serotypes_1996-2025_monthly.csv`. Contains the serotype fractions in columns `p_1`, `p_2`, `p_3` and `p_4`, as generated using the Bayesian serotype imputation model in `~/data/conversion/modeling_serotypes/fit-model.py`.
+
 ## Conversion scripts
 
-+ `access_to_healthcare.R`: Downloads raw data on the number of available hospital beds in Brazil from DataSus and formats it into `BR_hospital-beds-per-capita_2005-2023.csv`. Data are not saved locally, and downloading takes a whole night.
++ `access_to_healthcare.R`: Downloads raw data on the number of available hospital beds in Brazil from DataSus and formats it into `BR_hospital-beds-per-capita_2005-2023.csv`. Data are not saved locally, and downloading them took about 12 hours.
 
 + `build_distance-matrix_covariates.ipynb`: Notebook used to build a demographically-weighted distance matrix between Brazilian states `weighted_distance_matrix.csv`, as well as a dataset of Brazilian state-level covariates relevant to DENV transmission in `state_covariates.csv`. Recommend working in the environment `GEOPANDAS_ENV.yml`.
 
-+ `DENV_datasus_conversion.py`: Script used to convert the (partly confidential) raw linelisted datasus DENV data into a more pleasant interim format.
++ `DENV_datasus_conversion.py`: Script used to convert the (partly confidential) raw linelisted datasus DENV data (`~/data/raw/DENV_datasus/`) into a more pleasant interim format.
 
 ### Modeling serotypes
 
-+ `fit-model.py`: pyMC model to impute the DENV datasus serotype data (`DENV-serotypes_1996-2025_monthly/weekly.csv`).
+This folder contains a standalone Bayesian model used to smooth and impute the serotyped data.
+
++ `fit-model.py`: Implementation of a Bayesian model (pyMC) to impute the DENV datasus serotype data (`~/data/interim/DENV-serotypes_1996-2025_monthly/weekly.csv`).
++ `SEROTYPE_MODEL_ENV.yml`: Recommended environment to run the serotype model in.
++ `visualise-model.ipynb`: Can be used to visualise the output of a run.
