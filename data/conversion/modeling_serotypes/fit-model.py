@@ -46,6 +46,7 @@ if not os.path.exists(output_folder):
 
 # Distance matrix
 # ~~~~~~~~~~~~~~~
+distance_matrix = True
 
 if distance_matrix == False:
     # Load adjacency matrix
@@ -97,7 +98,7 @@ df = df[df['date'] > datetime(1999,1,1)]
 df["state_idx"], _ = pd.factorize(df["UF"])
 df["month_idx"], _ = pd.factorize(df["date"])
 
-# 4. Fill NaNs in a principled way
+# 5. Fill NaNs in a principled way
 def fill_serotypes(row):
     sero = row[sero_cols]
     if sero.notna().any():
@@ -108,30 +109,30 @@ def fill_serotypes(row):
     return row
 df = df.apply(fill_serotypes, axis=1)
 
-# 5. Compute N_typed
+# 6. Compute N_typed
 df["N_typed"] = df[sero_cols].sum(axis=1, skipna=False)                                     # if serotypes available --> sum them
 df.loc[df[['DENV_1', 'DENV_2', 'DENV_3', 'DENV_4']].isna().all(axis=1), 'N_typed'] = np.nan      # if all serotypes are Nan --> N_typed = 0 --> Wait, I don't think this is appropriate.
 
-# 6. Compute delta (typing fraction)
+# 7. Compute delta (typing fraction)
 df["delta"] = df["N_typed"] / df["DENV_total"]
 df['delta'] = df['delta'].where(df['N_typed'] > 0, np.nan) # When N_typed == 0, we don't know delta — mark as missing
 df["delta"] = df["delta"].clip(lower=1e-12, upper=1 - 1e-12)
 
-# 7. Compute year index
+# 8. Compute year index
 df["year"] = pd.to_datetime(df["date"]).dt.year
 df["year_idx"] = df["year"] - df["year"].min()
 
-# 8. Compute year-state index
+# 9. Compute year-state index
 df["state_year_idx"] = df["state_idx"].astype(str) + "_" + df["year_idx"].astype(str)
 df["state_year_idx"], state_year_labels = pd.factorize(df["state_year_idx"])
 
-# 9. Add year-region index
+# 10. Add year-region index
 df['region'] = df['UF'].map(uf2region_map)
 df["region_idx"], region_labels = pd.factorize(df["region"])
 df["region_year_idx"] = df["region_idx"].astype(str) + "_" + df["year_idx"].astype(str)
 df["region_year_idx"], region_year_labels = pd.factorize(df["region_year_idx"])
 
-# 10. Build PyMC arrays
+# 11. Build PyMC arrays
 
 # --- For Beta model (typing fraction, always available) ---
 delta_obs = df["delta"].to_numpy().astype(float)
