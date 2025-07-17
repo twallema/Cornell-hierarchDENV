@@ -32,9 +32,13 @@ These data are partly confidential and can be found on the Bento lab box.
 
 + `adjacency_matrix.csv`: Contains a square origin-destination-type adjacency matrix of the Brasilian states.
 
-## DENV datasus
+### DENV datasus
 
 + `DENV-serotypes_1996-2025_monthly/weekly.csv`: Weekly or monthly total confirmed (not discarded) DENV cases, as well as number of serotyped cases per DENV serotype. Generated using `DENV_datasus_conversion.py`. 
+
+### Imputed DENV datasus
+
++ `DENV-serotypes-imputed_1996-2025_monthly.csv`: Monthly total confirmed DENV cases in every Brazilian UF (column: `DENV_total`), identical to `~/data/interim/DENV_datasus/DENV-serotypes_1996-2025_monthly.csv`. Contains the serotype fractions in columns `p_1`, `p_2`, `p_3` and `p_4`, as generated using the Bayesian serotype imputation model in `~/data/conversion/modeling_serotypes/fit-model.py`.
 
 ## Conversion scripts
 
