@@ -4,7 +4,7 @@ import platform
 import pybind11
 from setuptools import setup, Extension
 
-# This setup file contains the dynamic parts of `hierarchSIR` installer, while `pyproject.toml` contains the static parts
+# This setup file contains the dynamic parts of `hierarchDENV` installer, while `pyproject.toml` contains the static parts
 
 # find the C++ Boost integration module
 def find_boost_include():
@@ -44,8 +44,8 @@ def find_boost_lib():
 # define the C++ module we want to bind to Python
 ext_modules = [
     Extension(
-        "hierarchSIR.sir_model",
-        sources=["src/hierarchSIR/sir_model.cpp"],
+        "hierarchDENV.sir_model",
+        sources=["src/hierarchDENV/sir_model.cpp"],
         include_dirs=[pybind11.get_include(), find_boost_include()],
         library_dirs=[find_boost_lib()],
         libraries=["boost_system"],
