@@ -40,10 +40,10 @@ season_end_month = 9
 ## frequentist optimization
 n_nm = 1000                                                     # Number of NM search iterations
 ## bayesian inference
-n_mcmc = 2000                                                   # Number of MCMC iterations
+n_mcmc = 3000                                                   # Number of MCMC iterations
 multiplier_mcmc = 3                                             # Total number of Markov chains = number of parameters * multiplier_mcmc
-print_n = 2000                                                  # Print diagnostics every `print_n`` iterations
-discard = 1500                                                  # Discard first `discard` iterations as burn-in
+print_n = 3000                                                  # Print diagnostics every `print_n`` iterations
+discard = 2500                                                  # Discard first `discard` iterations as burn-in
 thin = 50                                                       # Thinning factor emcee chains
 processes = int(os.environ.get('NUM_CORES', mp.cpu_count()))    # Number of CPUs to use
 n = 100                                                         # Number of simulations performed in MCMC goodness-of-fit figure

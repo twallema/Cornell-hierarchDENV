@@ -1,11 +1,11 @@
 import pandas as pd
 
 # model names
-model_names = ['SIR-1S', 'SIR-4S']
+model_names = ['SIR-1S',]
 # get ufs
 ufs = pd.read_csv('../adjacency_matrix.csv', index_col=0).index.to_list()
 # seasons
-seasons = ['2023-2024', '2022-2023', '2021-2022', '2020-2021', '2019-2020', '2018-2019', '2017-2018', '2016-2017', '2015-2016', '2014-2015']
+seasons = ['2023-2024', '2022-2023', '2021-2022', '2020-2021', '2019-2020', '2018-2019', '2017-2018', '2016-2017', '2015-2016', '2014-2015', '2013-2014', '2012-2013', '2011-2012', '2010-2011']
 # parameter names per model
 parameter_names = [
     ['rho_report', 'f_R', 'f_I', 'beta'] + [f'delta_beta_temporal_{i}' for i in range(11)],

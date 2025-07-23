@@ -98,6 +98,10 @@ class log_posterior_probability():
         return np.sum(expon.logpdf(theta[idxs], scale=scale))
     
     @staticmethod
+    def inv_expon_hyper_logpdf(theta, idxs, scale):
+        return np.sum(expon.logpdf(1/theta[idxs], scale=scale))
+
+    @staticmethod
     def delta_beta_temporal_logpdf(theta, idxs, scale):
         return np.sum(expon.logpdf(np.abs(theta[idxs]), scale=scale))
 
@@ -151,15 +155,19 @@ class log_posterior_probability():
         delta_beta_scale = np.ones(delta_beta_mu_idxs.stop - delta_beta_mu_idxs.start)
         hyper_prior_lpp_fs.append((self.delta_beta_temporal_logpdf, (delta_beta_mu_idxs, delta_beta_scale)))
 
-        # # Hyperdistribution prior: f_R_a ~ Exponential(1) --> nudge towards as low immunity as possible
-        # if 'f_R_a' in self.hyper_par_name_to_idx.keys():
-        #     f_R_a_idxs = self.hyper_par_name_to_idx['f_R_a']
-        #     hyper_prior_lpp_fs.append((self.expon_hyper_logpdf, (f_R_a_idxs, 1)))
+        # Hyperdistribution prior: f_R_a ~ Exponential(1) & 1/f_R_b ~ Exponential(1) --> nudge towards as low immunity as possible
+        if 'f_R_a' in self.hyper_par_name_to_idx.keys():
+            f_R_a_idxs = self.hyper_par_name_to_idx['f_R_a']
+            f_R_b_idxs = self.hyper_par_name_to_idx['f_R_b']
+            hyper_prior_lpp_fs.append((self.expon_hyper_logpdf, (f_R_a_idxs, 1)))
+            hyper_prior_lpp_fs.append((self.inv_expon_hyper_logpdf, (f_R_b_idxs, 1)))   
 
-        # # Hyperdistribution prior: rho_report_b ~ Exponential(1) --> nudge towards as high observations as possible
-        # if 'rho_report_b' in self.hyper_par_name_to_idx.keys():
-        #     rho_report_b_idxs = self.hyper_par_name_to_idx['rho_report_b']
-        #     hyper_prior_lpp_fs.append((self.expon_hyper_logpdf, (rho_report_b_idxs, 1)))
+        # Hyperdistribution prior: 1/rho_report_a ~ Exponential(1) & rho_report_b ~ Exponential(1) --> nudge towards as high observations as possible
+        if 'rho_report_a' in self.hyper_par_name_to_idx.keys():
+            rho_report_a_idxs = self.hyper_par_name_to_idx['rho_report_a']
+            rho_report_b_idxs = self.hyper_par_name_to_idx['rho_report_b']
+            hyper_prior_lpp_fs.append((self.inv_expon_hyper_logpdf, (rho_report_a_idxs, 1)))
+            hyper_prior_lpp_fs.append((self.expon_hyper_logpdf, (rho_report_b_idxs, 1)))
 
         return season_prior_lpp_fs, hyper_prior_lpp_fs
 

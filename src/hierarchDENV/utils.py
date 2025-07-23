@@ -311,8 +311,8 @@ def get_priors(strains, hyperparameters):
     if not hyperparameters:
         # assign priors (R0 ~ N(2.5, 0.5); modifiers centered around zero; f_R ~ N(0.5, 0.1); reporting parameters nudged to lowest value)
         log_prior_prob_fcn = 2*[log_prior_beta,] + [log_prior_gamma,] + 2*[log_prior_normal,]
-        log_prior_prob_fcn_args = [{'a': 2, 'b': 1, 'loc': 0, 'scale': 1},
-                                    {'a': 1, 'b': 2, 'loc': 0, 'scale': 1},
+        log_prior_prob_fcn_args = [{'a': 4, 'b': 1, 'loc': 0, 'scale': 1},
+                                    {'a': 1, 'b': 4, 'loc': 0, 'scale': 1},
                                     {'a': 1, 'loc': 0, 'scale': 0.1*max(bounds[2])},
                                     {'avg':  0.5, 'stdev': 0.1},
                                     {'avg':  0, 'stdev': 0.10}]
