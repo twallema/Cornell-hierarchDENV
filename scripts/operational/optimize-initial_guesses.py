@@ -2,7 +2,7 @@
 This script,
 1. takes in an initial parameter guess from `~/data/interim/calibration/initial_guesses.csv`
 2. uses it to optimise the hierarchDENV model's parameters (in every federative unit)
-3. puts it back
+3. puts it back in the initial parameter guess file
 """
 
 __author__      = "Tijs Alleman"
@@ -29,21 +29,24 @@ from hierarchDENV.utils import initialise_model, plot_fit, make_data_pySODM_comp
 ## Settings ##
 ##############
 
+# skip UFs
+skip_ufs = []
+
 # season length
 season_start_month = 9
 season_end_month = 9
 
 # optimization parameters
 ## frequentist optimization
-n_nm = 2000                                                     # Number of NM search iterations
+n_nm = 1000                                                     # Number of NM search iterations
 ## bayesian inference
-n_mcmc = 5000                                                   # Number of MCMC iterations
+n_mcmc = 2000                                                   # Number of MCMC iterations
 multiplier_mcmc = 3                                             # Total number of Markov chains = number of parameters * multiplier_mcmc
-print_n = 5000                                                  # Print diagnostics every `print_n`` iterations
-discard = 4000                                                  # Discard first `discard` iterations as burn-in
+print_n = 2000                                                  # Print diagnostics every `print_n`` iterations
+discard = 1500                                                  # Discard first `discard` iterations as burn-in
 thin = 50                                                       # Thinning factor emcee chains
 processes = int(os.environ.get('NUM_CORES', mp.cpu_count()))    # Number of CPUs to use
-n = 500                                                         # Number of simulations performed in MCMC goodness-of-fit figure
+n = 100                                                         # Number of simulations performed in MCMC goodness-of-fit figure
 hyperparameters = None
 
 #####################
@@ -67,10 +70,11 @@ model_name = f'SIR-{strains}S'
 ##################################
 
 # save the original guesses csv --> we will update this on-the-fly in this script
-initial_guesses_save = pd.read_csv('../../data/interim/calibration/initial_guesses.csv', index_col=[0,1,2])
+initial_guesses_save = pd.read_csv('../../data/interim/calibration/initial_guesses.csv', index_col=[0,1,2,3])
 
 # get ufs and seasons
 uf_list = initial_guesses_save.index.get_level_values('uf').unique().to_list()
+uf_list = [x for x in uf_list if x not in skip_ufs]
 season_lst = initial_guesses_save.columns.to_list()
 
 ##################
@@ -188,7 +192,7 @@ if __name__ == '__main__':
             df = samples_to_csv(samples_xr.median(dim=['chain', 'iteration']))
 
             # Save in the initial guesses file
-            initial_guesses_save.loc[(model_name, uf, slice(None)), season] = df.values
+            initial_guesses_save.loc[(model_name, uf, slice(None), slice(None)), season] = df.values
 
             # Save the initial guesses file
             initial_guesses_save.to_csv('../../data/interim/calibration/initial_guesses.csv')

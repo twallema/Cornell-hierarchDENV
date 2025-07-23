@@ -35,10 +35,12 @@ def initialise_model(strains=False, uf='MG'):
         # transmission coefficient modifiers
         'delta_beta_temporal': np.array([1.5, 0.5, 1.5, 0.5, 1.5, 0.5, 1.5, 0.5, 1.5, 0.5, 1.5])-1,
         'modifier_length': 30,
-        'sigma': 5,
+        'sigma': 7,
         # reporting parameters
         'rho_report': 1,
-        'T_report': 7
+        'T_report': 7,
+        # immunity linking (unused)
+        'season': '2024-2025'
         }
     
     # get inhabitants
@@ -65,7 +67,7 @@ class initial_condition_function():
         self.population = population 
         pass
 
-    def wo_immunity_linking(self, f_I, f_R):
+    def wo_immunity_linking(self, f_I, f_R, season):
         """
         A function generating the model's initial condition -- no immunity linking; direct estimation of recovered population at start of simulation
         
@@ -80,6 +82,9 @@ class initial_condition_function():
         
         - f_R: float
             - Fraction of the population initially immune
+
+        - season: str
+            - Current season (unused)
 
         output
         ------
@@ -299,12 +304,12 @@ def get_priors(strains, hyperparameters):
     model_name = f'SIR-{strains}S'
     # Define parameters, bounds and labels
     pars = ['rho_report', 'f_R', 'f_I', 'beta', 'delta_beta_temporal']                              # parameters to calibrate
-    bounds = [(0,1), (0,1), (1e-9,1e-2), (0,1), (-0.50,0.50)]                                 # parameter bounds
+    bounds = [(0,1), (0,1), (1e-9,1e-2), (0,1), (-0.50,0.50)]                                       # parameter bounds
     labels = [r'$\rho_{report}$',  r'$f_{R}$', r'$f_{I}$', r'$\beta$', r'$\Delta \beta_{t}$']       # labels in output figures
     
     # UNINFORMED: >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     if not hyperparameters:
-        # assign priors (R0 ~ N(2.5, 0.5); modifiers centered around zero; f_R ~ N(0.5, 0.15); reporting parameters nudged to lowest value)
+        # assign priors (R0 ~ N(2.5, 0.5); modifiers centered around zero; f_R ~ N(0.5, 0.1); reporting parameters nudged to lowest value)
         log_prior_prob_fcn = 2*[log_prior_beta,] + [log_prior_gamma,] + 2*[log_prior_normal,]
         log_prior_prob_fcn_args = [{'a': 2, 'b': 1, 'loc': 0, 'scale': 1},
                                     {'a': 1, 'b': 2, 'loc': 0, 'scale': 1},
@@ -381,9 +386,9 @@ def get_priors(strains, hyperparameters):
 
 from scipy.ndimage import gaussian_filter1d
 def get_transmission_coefficient_timeseries(modifier_vector: np.ndarray,
-                                            sigma: float=2.5) -> np.ndarray:
+                                            sigma: float=7) -> np.ndarray:
     """
-    A function mapping the modifier_vectors between Sep 15 and May 15 and smoothing it with a gaussian filter
+    A function mapping the delta_beta_temporal vector between Oct 1 and Sept 30 and smoothing it with a gaussian filter
 
     input
     -----

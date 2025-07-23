@@ -140,18 +140,26 @@ class log_posterior_probability():
             else:
                 raise ValueError(f"'{pars_model_hyperdistribution}' is not a valid hyperdistribution.")
 
-        # Hyperdistribution prior: R0 ~ N(0.455, 0.055)
+        # Hyperdistribution prior: R0 ~ N(2.5, 0.5)
         beta_mu_idxs = self.hyper_par_name_to_idx['beta_mu']
-        hyper_prior_lpp_fs.append((self.norm_hyper_logpdf, (beta_mu_idxs, 0.455, 0.055)))
-
-        # Hyperdistribution prior: beta_sigma ~ Exponential(0.055)
         beta_sigma_idxs = self.hyper_par_name_to_idx['beta_sigma']
-        hyper_prior_lpp_fs.append((self.expon_hyper_logpdf, (beta_sigma_idxs, 0.055)))
+        hyper_prior_lpp_fs.append((self.norm_hyper_logpdf, (beta_mu_idxs, 0.5, 0.1)))
+        hyper_prior_lpp_fs.append((self.expon_hyper_logpdf, (beta_sigma_idxs, 0.1)))
 
         # Hyperdistribution prior: delta_beta_temporal_mu ~ Exponential(1)
         delta_beta_mu_idxs = self.hyper_par_name_to_idx['delta_beta_temporal_mu']
         delta_beta_scale = np.ones(delta_beta_mu_idxs.stop - delta_beta_mu_idxs.start)
         hyper_prior_lpp_fs.append((self.delta_beta_temporal_logpdf, (delta_beta_mu_idxs, delta_beta_scale)))
+
+        # # Hyperdistribution prior: f_R_a ~ Exponential(1) --> nudge towards as low immunity as possible
+        # if 'f_R_a' in self.hyper_par_name_to_idx.keys():
+        #     f_R_a_idxs = self.hyper_par_name_to_idx['f_R_a']
+        #     hyper_prior_lpp_fs.append((self.expon_hyper_logpdf, (f_R_a_idxs, 1)))
+
+        # # Hyperdistribution prior: rho_report_b ~ Exponential(1) --> nudge towards as high observations as possible
+        # if 'rho_report_b' in self.hyper_par_name_to_idx.keys():
+        #     rho_report_b_idxs = self.hyper_par_name_to_idx['rho_report_b']
+        #     hyper_prior_lpp_fs.append((self.expon_hyper_logpdf, (rho_report_b_idxs, 1)))
 
         return season_prior_lpp_fs, hyper_prior_lpp_fs
 
@@ -175,7 +183,8 @@ class log_posterior_probability():
                     season_dicts.append(None)
             self.selection_dictionaries.append(season_dicts)
 
-    def __init__(self, model, par_names, par_bounds, par_hyperdistributions, datasets, seasons):
+    def __init__(self, model, par_names, par_bounds, par_hyperdistributions, datasets, seasons, start_simulations=None):
+        
         # get the shapes of the model parameters
         self.par_sizes, self.par_shapes = validate_calibrated_parameters(par_names, model.parameters)
         self.n_pars = sum([v[0] for v in self.par_shapes.values()])
@@ -230,9 +239,14 @@ class log_posterior_probability():
             self.aggregate_over.append(out_2)
 
         # compute start and end of simulation (per season)
+        if start_simulations:
+            assert len(start_simulations) == len(datasets), "input 'start_simulations' must be of equal length as 'datasets'"
         self.simtimes = []
-        for data in datasets:
-            start_sim = min([df.index.get_level_values('date').unique().min() for df in data]).to_pydatetime() 
+        for i,data in enumerate(datasets):
+            if not start_simulations:
+                start_sim = min([df.index.get_level_values('date').unique().min() for df in data]).to_pydatetime()
+            else:
+                start_sim = start_simulations[i]
             end_sim = max([df.index.get_level_values('date').unique().max() for df in data]).to_pydatetime()
             self.simtimes.append([start_sim, end_sim])
 
@@ -313,7 +327,7 @@ class log_posterior_probability():
         # pre-allocate lpp
         lpp = 0
 
-         # compute hyperdistribution priors
+        # compute hyperdistribution priors
         for hyper_prior_lpp, pars in self.hyper_prior_lpp_fs:
             lpp += hyper_prior_lpp(theta, *pars)
         lpp *= self.n_seasons

@@ -13,113 +13,119 @@ import pandas as pd
 import multiprocessing as mp
 from datetime import datetime
 from multiprocessing import get_context
-from hierarchSIR.training import log_posterior_probability, dump_sampler_to_xarray, traceplot, plot_fit, hyperdistributions
-from hierarchSIR.utils import initialise_model, make_data_pySODM_compatible, str_to_bool
+from hierarchDENV.training import log_posterior_probability, dump_sampler_to_xarray, traceplot, plot_fit, hyperdistributions
+from hierarchDENV.utils import initialise_model, make_data_pySODM_compatible, str_to_bool
 
-#####################
-## Parse arguments ##
-#####################
-
-# parse arguments
-parser = argparse.ArgumentParser()
-parser.add_argument("--strains", type=int, help="Number of strains. Valid options are: 1 or 4.")
-args = parser.parse_args()
-
-# assign to desired variables
-strains = args.strains
 
 ##############
 ## Settings ##
 ##############
 
-# model settings
-UF = 'MG'
-
 # calibration settings
 ## datasets
-identifiers_list = ['exclude_None',]                                                                                # identifiers of training datasets
-seasons_list = [                                                                                                    # season to include in training
-        ['2023-2024', '2024-2025'],
-        ]                                                                                        
-                           
-start_calibration_month = 10                                                                                        # start calibration on Oct 1 of the current year
-end_calibration_month = 10                                                                                          # end calibration on Oct 1 of next year
+identifier = 'validation_1'                                                                                     # identifiers of the training
+seasons = ['2021-2022', '2020-2021', '2019-2020', '2018-2019', '2017-2018', '2016-2017', '2015-2016']           # season to include in training                                                                                                       
+# season length
+season_start_month = 9
+season_end_month = 9
 run_date = datetime.today().strftime("%Y-%m-%d")
 ## define number of chains
-max_n = 60000
+max_n = 200
 pert = 0.05
 processes = int(os.environ.get('NUM_CORES', mp.cpu_count()))
 ## printing and postprocessing
-print_n = 5000
+print_n = 100
 backend = None
-discard = 55000
-thin = 100
+discard = 50
+thin = 1
 
-# Make folder structure
-## format model name
+
+#####################
+## Parse arguments ##
+#####################
+
+# arguments determine the model + data combo used to forecast
+parser = argparse.ArgumentParser()
+parser.add_argument("--serotypes", type=str_to_bool, help="Include serotypes. False: 1 strain model, True: 4 strain model.")
+parser.add_argument("--ufs", type=lambda s: s.split(','), help="List of Brazilian federative unit abbreviations.")
+args = parser.parse_args()
+
+# assign to desired variables
+serotypes = args.serotypes
+ufs = args.ufs
+
+# format number of strains and model name
+strains = 4 if serotypes is True else 1
 model_name = f'SIR-{strains}S'
-## define samples path
-samples_path=fig_path=f'../../data/interim/calibration/hierarchical-training/{model_name}/' # Path to backend
-## check if samples folder exists, if not, make it
-if not os.path.exists(samples_path):
-    os.makedirs(samples_path)
+
+
+##################
+## Optimisation ##
+##################
 
 # Needed for multiprocessing to work properly
 if __name__ == '__main__':
 
-    # Loop over trainings
-    for seasons, identifier in zip(seasons_list, identifiers_list):
+    # Loop over states
+    for uf in ufs:
         print(f"\nWorking on calibration with ID: {identifier}")
         sys.stdout.flush()
-                
+        
+        #########################
+        ## Make results folder ##
+        #########################
+
+        ## format model name
+        model_name = f'SIR-{strains}S'
+        ## define samples path
+        samples_path=fig_path=f'../../data/interim/calibration/hierarchical-training/{model_name}/{uf}/{identifier}/' # Path to backend
+        ## check if samples folder exists, if not, make it
+        if not os.path.exists(samples_path):
+            os.makedirs(samples_path)
+
         ################
         ## Setup data ##
         ################
 
         # convert to a list of start and enddates (datetime)
-        start_calibrations = [datetime(int(season[0:4]), start_calibration_month, 1) for season in seasons]
-        end_calibrations = [datetime(int(season[0:4])+1, end_calibration_month, 1) for season in seasons]
+        start_calibrations = [datetime(int(season[0:4]), season_start_month, 1) for season in seasons]
+        end_calibrations = [datetime(int(season[0:4])+1, season_end_month, 1) for season in seasons]
+        start_simulations = start_calibrations
 
         # get data
         datasets = []
         for start_calibration, end_calibration, season in zip(start_calibrations, end_calibrations, seasons):
-            data, _, _, _ = make_data_pySODM_compatible(strains, use_ED_visits, start_calibration, end_calibration, season)
+            data, _, _, _ = make_data_pySODM_compatible(uf, serotypes, start_calibration, end_calibration)
             datasets.append(data)
 
         #################
         ## Setup model ##
         #################
 
-        model = initialise_model(strains=strains, immunity_linking=immunity_linking, season='2014-2015', fips_state=fips_state)
+        model = initialise_model(strains=strains, uf=uf)
 
         ##########################################
         ## Setup posterior probability function ##
         ##########################################
 
         # define model parameters to calibrate to every season and their bounds
-        # not how we're not cutting out the parameters associated with the ED visit data
-        if not immunity_linking:
-            par_names = ['rho_i', 'T_h', 'rho_h', 'f_R', 'f_I', 'beta', 'delta_beta_temporal']
-            par_bounds = [(1e-5,0.15), (0.5, 15), (1e-5,0.02), (0.01,0.99), (1e-9,1e-3), (0.01,1), (-1,1)]
-            par_hyperdistributions = ['lognorm', 'lognorm', 'lognorm', 'norm', 'lognorm', 'norm', 'norm']
-        else:
-            par_names = ['rho_i', 'T_h', 'rho_h', 'iota_1', 'iota_2', 'iota_3', 'f_I', 'beta', 'delta_beta_temporal']
-            par_bounds = [(1e-5,0.15), (0.5, 15), (1e-5,0.02), (0,1E-3), (0,1E-3), (0,1E-3), (1e-9,1e-3), (0.01,1), (-1,1)]
-            par_hyperdistributions = ['lognorm', 'lognorm', 'lognorm', 'lognorm', 'lognorm', 'lognorm', 'lognorm', 'norm', 'norm']
+        par_names = ['rho_report', 'f_R', 'f_I', 'beta', 'delta_beta_temporal']                             # parameters to calibrate
+        par_bounds = [(0,1), (0,1), (1e-9,1e-2), (0,1), (-0.50,0.50)]                                       # parameter bounds
+        par_hyperdistributions = ['beta', 'beta', 'lognorm', 'norm', 'norm']                            
         # setup lpp function
-        lpp = log_posterior_probability(model, par_names, par_bounds, par_hyperdistributions, datasets, seasons)
+        lpp = log_posterior_probability(model, par_names, par_bounds, par_hyperdistributions, datasets, seasons, start_simulations)
 
         ####################################
         ## Fetch initial guess parameters ##
         ####################################
 
         # parameters: get optimal independent fit with weakly informative prior on R0 and immunity
-        pars_model_0 = pd.read_csv('../../data/interim/calibration/single-season-optimal-parameters.csv', index_col=[0,1,2])
-        pars_0 = list(pars_model_0.loc[(model_name, immunity_linking, slice(None)), seasons].transpose().values.flatten().tolist())
+        pars_model_0 = pd.read_csv('../../data/interim/calibration/initial_guesses.csv', index_col=[0,1,2,3])
+        pars_0 = list(pars_model_0.loc[(model_name, uf, slice(None), slice(None)), seasons].transpose().values.flatten().tolist())
 
         # hyperparameters: use all seasons included as the default starting point
-        hyperpars_0 = pd.read_csv('../../data/interim/calibration/hyperparameters.csv', index_col=[0,1,2,3])
-        hyperpars_0 = hyperpars_0.loc[(model_name, immunity_linking, use_ED_visits, slice(None)), 'exclude_None'].values.tolist()
+        hyperpars_0 = pd.read_csv('../../data/interim/calibration/hyperparameters.csv', index_col=[0,1,2])
+        hyperpars_0 = hyperpars_0.loc[(model_name, uf, slice(None)), 'initial_guess'].values.tolist()
 
         # combine
         theta_0 = hyperpars_0 + pars_0
@@ -165,8 +171,15 @@ if __name__ == '__main__':
                 if sampler.iteration % print_n:
                     continue
                 else:
+
                     # every print_n steps do..
-                    # ..dump samples
+                    # >>>>>>>>>>>>>>>>>>>>>>>>>
+
+                    # ..dump samples without discarding and generate traceplots
+                    samples = dump_sampler_to_xarray(sampler.get_chain(discard=0, thin=thin), samples_path+str(identifier)+'_SAMPLES_'+run_date+'.nc', lpp.hyperpar_shapes, lpp.par_shapes, seasons)
+                    traceplot(samples, lpp.par_shapes, lpp.hyperpar_shapes, samples_path, identifier, run_date)
+
+                    # ..dump samples with discarding and generate other results
                     samples = dump_sampler_to_xarray(sampler.get_chain(discard=discard, thin=thin), samples_path+str(identifier)+'_SAMPLES_'+run_date+'.nc', lpp.hyperpar_shapes, lpp.par_shapes, seasons)
                     # write median hyperpars to .csv
                     hyperpars_names = []
@@ -178,7 +191,12 @@ if __name__ == '__main__':
                         hyperpars_names.extend([f'{hyperpar_name}_{i}' if hyperpar_shape[0] > 1 else f'{hyperpar_name}' for i in range(hyperpar_shape[0])])
                     hyperpars_values = np.hstack(hyperpars_values)
                     # save to .csv
-                    pd.Series(index=hyperpars_names, data=hyperpars_values, name=identifier).to_csv(samples_path+str(identifier)+'_HYPERDIST_'+run_date+'.csv')
+                    hyperpars_df = pd.Series(index=hyperpars_names, data=hyperpars_values, name=identifier)
+                    hyperpars_df.to_csv(samples_path+str(identifier)+'_HYPERDIST_'+run_date+'.csv')
+                    # add to hyperparameters file
+                    hyperpars_0 = pd.read_csv('../../data/interim/calibration/hyperparameters.csv', index_col=[0,1,2])
+                    hyperpars_0.loc[(model_name, uf, slice(None)), identifier] = hyperpars_df.values
+                    hyperpars_0.to_csv('../../data/interim/calibration/hyperparameters.csv')
                     # .. visualise hyperdistributions
                     hyperdistributions(samples, samples_path+str(identifier)+'_HYPERDIST_'+run_date+'.pdf', lpp.par_shapes, lpp.hyperpar_shapes, par_hyperdistributions, par_bounds, 100)
                     # ..generate traceplots
