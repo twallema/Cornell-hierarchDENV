@@ -17,36 +17,34 @@ from datetime import timedelta
 from datetime import datetime as datetime
 # pySODM functions
 from pySODM.optimization import nelder_mead
-from pySODM.optimization.utils import assign_theta, add_poisson_noise
+from pySODM.optimization.utils import assign_theta, add_poisson_noise, add_negative_binomial_noise
 from pySODM.optimization.objective_functions import log_posterior_probability
 from pySODM.optimization.mcmc import perturbate_theta, run_EnsembleSampler
-# hierarchSIR functions
-from hierarchSIR.utils import initialise_model, simout_to_hubverse, plot_fit, make_data_pySODM_compatible, get_priors, str_to_bool
+# hierarchDENV functions
+from hierarchDENV.utils import initialise_model, plot_fit, make_data_pySODM_compatible, get_priors, str_to_bool, samples_to_csv
 
 ##############
 ## Settings ##
 ##############
 
 # define seasons and hyperparameter combo's to loop over
-season_lst = ['2024-2025', '2023-2024', '2019-2020', '2018-2019', '2017-2018', '2016-2017', '2015-2016', '2014-2015']
-hyperparameters_lst = ['exclude_2024-2025', 'exclude_2023-2024','exclude_2019-2020', 'exclude_2018-2019', 'exclude_2017-2018', 'exclude_2016-2017', 'exclude_2015-2016', 'exclude_2014-2015']
+season_lst = ['2023-2024',]
+hyperparameters_lst = [None,]
 
 # model settings/ save settings
-fips_state = 37             # NC
 quantiles = False           # save quantiles vs. individual trajectories 
 
 # optimization parameters
 ## frequentist optimization
 n_nm = 2000                                                     # Number of NM search iterations
 ## bayesian inference
-n_mcmc = 8000                                                  # Number of MCMC iterations
+n_mcmc = 2000                                                  # Number of MCMC iterations
 multiplier_mcmc = 3                                             # Total number of Markov chains = number of parameters * multiplier_mcmc
-print_n = 8000                                                 # Print diagnostics every `print_n`` iterations
-discard = 7000                                                  # Discard first `discard` iterations as burn-in
-thin = 100                                                      # Thinning factor emcee chains
+print_n = 2000                                                 # Print diagnostics every `print_n`` iterations
+discard = 1500                                                  # Discard first `discard` iterations as burn-in
+thin = 50                                                      # Thinning factor emcee chains
 processes = int(os.environ.get('NUM_CORES', mp.cpu_count()))    # Number of CPUs to use
 n = 1000                                                         # Number of simulations performed in MCMC goodness-of-fit figure
-ratio_weight_target = 1
 
 #####################
 ## Parse arguments ##
@@ -54,17 +52,16 @@ ratio_weight_target = 1
 
 # arguments determine the model + data combo used to forecast
 parser = argparse.ArgumentParser()
-parser.add_argument("--strains", type=int, help="Number of strains. Valid options are: 1, 2 (flu A, B) or 3 (flu AH1, AH3, B).")
-parser.add_argument("--immunity_linking", type=str_to_bool, help="Use an immunity linking function.")
-parser.add_argument("--use_ED_visits", type=str_to_bool, help="Use ED visit data (ILI) in addition to ED admission data (hosp. adm.).")
+parser.add_argument("--uf", type=str, help="Brasilian Federative Unit (abbreviated).")
+parser.add_argument("--serotypes", type=str_to_bool, help="Include serotypes. False: 1 strain model, True: 4 strain model.")
 args = parser.parse_args()
 
 # assign to desired variables
-strains = args.strains
-immunity_linking = args.immunity_linking
-use_ED_visits = args.use_ED_visits
+uf = args.uf
+serotypes = args.serotypes
 
 ## format model name
+strains = 4 if serotypes is True else 1
 model_name = f'SIR-{strains}S'
 
 ##############
@@ -82,30 +79,30 @@ if __name__ == '__main__':
 
         # optimization parameters
         ## dates
-        season_start = int(season[0:4])                             # start year of season
-        start_simulation = datetime(season_start, 10, 1)            # date forward simulation is started
-        start_calibration = datetime(season_start, 11, 15)          # incremental calibration will start from here
-        end_calibration = datetime(season_start+1, 4, 7)            # and incrementally (weekly) calibrate until this date
-        end_validation = datetime(season_start+1, 5, 1)             # enddate of validation data used on plots
+        season_start = int(season[0:4])                                 # start year of season
+        start_simulation = datetime(season_start, 9, 1)                # date forward simulation is started
+        start_calibration = datetime(season_start+1, 9, 30)               # incremental calibration will start from here
+        end_calibration = datetime(season_start+1, 9, 30)               # and incrementally (weekly) calibrate until this date
+        end_validation = datetime(season_start+1, 9, 30)                # enddate of validation data used on plots
 
         ##########################################
         ## Prepare pySODM llp dataset arguments ##
         ##########################################
 
         # set up priors
-        pars, bounds, labels, log_prior_prob_fcn, log_prior_prob_fcn_args = get_priors(model_name, strains, immunity_linking, use_ED_visits, hyperparameters)
+        pars, bounds, labels, log_prior_prob_fcn, log_prior_prob_fcn_args = get_priors(strains, hyperparameters)
 
         # retrieve guestimate NM
-        theta = list(pd.read_csv('../../data/interim/calibration/single-season-optimal-parameters.csv', index_col=[0,1,2]).loc[(model_name, immunity_linking, slice(None))].mean(axis=1))
+        theta = list(pd.read_csv('../../data/interim/calibration/single-season-optimal-parameters.csv', index_col=[0,1,2]).loc[(model_name, uf, slice(None))].mean(axis=1))
 
         # format data
-        data, states, log_likelihood_fnc, log_likelihood_fnc_args = make_data_pySODM_compatible(strains, use_ED_visits, start_simulation, end_calibration, season)
+        data, states, log_likelihood_fnc, log_likelihood_fnc_args = make_data_pySODM_compatible(uf, serotypes, start_simulation, end_calibration)
 
         #################
         ## Setup model ##
         #################
 
-        model = initialise_model(strains=strains, immunity_linking=immunity_linking, season=season, fips_state=fips_state)
+        model = initialise_model(strains=strains, uf=uf)
 
         #####################
         ## Loop over weeks ##
@@ -120,7 +117,7 @@ if __name__ == '__main__':
 
             # Make folder structure
             identifier = f'reference_date-{(end_date+timedelta(weeks=1)).strftime('%Y-%m-%d')}' # identifier
-            samples_path=fig_path=f'../../data/interim/calibration/incremental-calibration/{model_name}/immunity_linking-{immunity_linking}/ED_visits-{use_ED_visits}/{season}/hyperpars-{hyperparameters}/{identifier}/' # Path to backend
+            samples_path=fig_path=f'../../data/interim/calibration/incremental-calibration/{model_name}/{uf}/{season}/hyperpars-{hyperparameters}/{identifier}/' # Path to backend
             run_date = datetime.today().strftime("%Y-%m-%d") # get current date
             # check if samples folder exists, if not, make it
             if not os.path.exists(samples_path):
@@ -130,20 +127,22 @@ if __name__ == '__main__':
             ## Set up posterior probability ##
             ##################################
 
-            # split data in calibration and validation dataset
+            # split data in calibration and validation dataset (freq: monthly, rescaled to daily)
             data_calib = [df.loc[slice(start_simulation, end_date)] for df in data]
             data_valid = [df.loc[slice(end_date+timedelta(days=1), end_validation)] for df in data]
 
             # normalisation weights for lpp
-            weights = [1/max(df) for df in data_calib[:-1]]
-            weights = np.array(weights) / np.mean(weights)
-            weights = np.append(weights, ratio_weight_target * max(weights))
+            weights = None
+            if strains > 1:
+                weights = [1/max(df) for df in data_calib[:-1]]
+                weights = np.array(weights) / np.mean(weights)
+                weights = np.append(weights, max(weights))
 
             # Setup objective function (no priors defined = uniform priors based on bounds)
             lpp = log_posterior_probability(model, pars, bounds, data_calib, states, log_likelihood_fnc, log_likelihood_fnc_args,
                                                             log_prior_prob_fnc=log_prior_prob_fcn, log_prior_prob_fnc_args=log_prior_prob_fcn_args,
                                                             start_sim=start_simulation, weights=weights, labels=labels)
-
+            
             #################
             ## Nelder-Mead ##
             #################
@@ -162,14 +161,14 @@ if __name__ == '__main__':
             simout = model.sim([start_simulation, end_validation])
             # visualise output
             plot_fit(simout, data_calib, data_valid, states, fig_path, identifier,
-                    lpp.coordinates_data_also_in_model, lpp.aggregate_over, lpp.additional_axes_data)
+                    lpp.coordinates_data_also_in_model, lpp.aggregate_over, lpp.additional_axes_data, rescaling=30)
 
             ##########
             ## MCMC ##
             ##########
 
             # Perturbate previously obtained estimate
-            ndim, nwalkers, pos = perturbate_theta(theta, pert=0.2*np.ones(len(theta)), multiplier=multiplier_mcmc, bounds=lpp.expanded_bounds)
+            ndim, nwalkers, pos = perturbate_theta(theta, pert=0.01*np.ones(len(theta)), multiplier=multiplier_mcmc, bounds=lpp.expanded_bounds)
             # Append some usefull settings to the samples dictionary
             settings={'start_simulation': start_simulation.strftime('%Y-%m-%d'), 'start_calibration': start_calibration.strftime('%Y-%m-%d'), 'end_calibration': end_date.strftime('%Y-%m-%d'),
                     'season': season, 'starting_estimate': theta}
@@ -178,6 +177,9 @@ if __name__ == '__main__':
                                                         moves=[(emcee.moves.DEMove(), 0.5*0.9),(emcee.moves.DEMove(gamma0=1.0), 0.5*0.1), (emcee.moves.StretchMove(live_dangerously=True), 0.50)],
                                                         settings_dict=settings, discard=discard, thin=thin,
                                                 )                                                                               
+            # Save median parameter values across chains and iterations in a .csv
+            df = samples_to_csv(samples_xr.median(dim=['chain', 'iteration']))
+            df.to_csv(samples_path+f'{identifier}_parameters.csv')
 
             #######################
             ## Visualize results ##
@@ -215,12 +217,8 @@ if __name__ == '__main__':
                 sys.stdout.flush()
                 pass
 
-            # Save as a .csv in hubverse format / raw netcdf
-            df = simout_to_hubverse(simout, fips_state, end_date+timedelta(weeks=1), 'wk inc flu hosp', 'H_inc', samples_path, quantiles=quantiles)
-            simout.to_netcdf(samples_path+f'{identifier}_simulation-output.nc')
-
             # Visualise goodnes-of-fit
             plot_fit(simout, data_calib, data_valid, states, fig_path, identifier,
-                    lpp.coordinates_data_also_in_model, lpp.aggregate_over, lpp.additional_axes_data)
+                    lpp.coordinates_data_also_in_model, lpp.aggregate_over, lpp.additional_axes_data, rescaling=30)
             
 
