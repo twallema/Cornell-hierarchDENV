@@ -14,12 +14,11 @@ serotypes = False
 uf = 'MG'
 
 # initialise
-model = initialise_model(serotypes=serotypes, uf=uf)
+strains = 4 if serotypes is True else 1
+model = initialise_model(strains=strains, uf=uf)
 
 # simulate
 simout = model.sim([datetime(2024,10,1), datetime(2025,10,1)])
-
-print(simout)
 
 # visualise
 fig,ax=plt.subplots()

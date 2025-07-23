@@ -10,47 +10,44 @@ from hierarchDENV.model import imsSIR
 ## Model initialisation ##
 ##########################
 
-def initialise_model(serotypes=False, uf='MG'):
+def initialise_model(strains=False, uf='MG'):
     """
     A function to intialise the hierarchDENV model
 
     input
     -----
 
-    - serotypes: bool
-        - do we want a serotype-stratified model?
+    - strains: int
+        - How many (independent) strains are modeled? No serotypes: 1. Serotypes: 4.
 
     uf: int
         - Abbreviation of Brazilian federative unit
     """
 
-    # convert bool `serotypes` to number of strains
-    serotypes = 4 if serotypes is True else 1
-
     # Parameters
     parameters = {
         # initial condition function
-        'f_I': 1e-4 * np.ones(serotypes),
-        'f_R': 0 * np.ones(serotypes),
+        'f_I': 1e-4 * np.ones(strains),
+        'f_R': 0 * np.ones(strains),
         # SIR parameters
-        'beta': 0.2 * np.ones(serotypes),
-        'gamma': 1/5 * np.ones(serotypes),
-        # modifiers
-        'delta_beta_temporal': np.array([1.5, 0.5, 1.5, 0.5, 1.5, 0.5, 1.5, 0.5, 1.5, 0.5, 1.5, 0.5])-1,
+        'beta': 0.2 * np.ones(strains),
+        'gamma': 1/5 * np.ones(strains),
+        # transmission coefficient modifiers
+        'delta_beta_temporal': np.array([1.5, 0.5, 1.5, 0.5, 1.5, 0.5, 1.5, 0.5, 1.5, 0.5, 1.5])-1,
         'modifier_length': 30,
         'sigma': 5,
-        # observation parameters
+        # reporting parameters
         'rho_report': 1,
         'T_report': 7
         }
     
     # get inhabitants
-    population = np.ones(serotypes) * get_demography(uf)
+    population = np.ones(strains) * get_demography(uf)
 
     # initialise initial condition function
     ICF = initial_condition_function(population).wo_immunity_linking
 
-    return imsSIR(parameters, ICF, serotypes)
+    return imsSIR(parameters, ICF, strains)
 
 
 class initial_condition_function():
