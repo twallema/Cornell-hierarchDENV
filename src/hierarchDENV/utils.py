@@ -40,7 +40,7 @@ def initialise_model(serotypes=False, uf='MG'):
         'modifier_length': 30,
         'sigma': 5,
         # observation parameters
-        'phi_report': 1 * np.ones(serotypes),
+        'rho_report': 1,
         'T_report': 7
         }
     

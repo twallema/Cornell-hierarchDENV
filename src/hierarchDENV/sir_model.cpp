@@ -12,13 +12,14 @@ int num_states = 9;
 // SIR model
 struct SIR {
     double T_report;
-    std::vector<double> beta, gamma, phi_report;
+    double rho_report;
+    std::vector<double> beta, gamma;
     std::vector<double> beta_modifiers;
 
     SIR(const std::vector<double>& beta, const std::vector<double>& gamma,
-        const std::vector<double>& phi_report, double T_report,
+        double rho_report, double T_report,
         const std::vector<double>& beta_modifiers)
-        : beta(beta), gamma(gamma), phi_report(phi_report), T_report(T_report), beta_modifiers(beta_modifiers) {}
+        : beta(beta), gamma(gamma), rho_report(rho_report), T_report(T_report), beta_modifiers(beta_modifiers) {}
 
     void operator()(const std::vector<double>& y, std::vector<double>& dydt, double t) {
         int num_strains = beta.size();
@@ -48,7 +49,7 @@ struct SIR {
             dydt[idx] = -lambda;                                                                // dS/dt
             dydt[idx + 1] = lambda - gamma[0] * I;                                              // dI/dt
             dydt[idx + 2] = gamma[0] * I;                                                       // dR/dt
-            dydt[idx + 3] = phi_report[strain] * lambda - (5/T_report) * I_inc_LCT0;            // dI_inc_LCT0/dt
+            dydt[idx + 3] = rho_report * lambda - (5/T_report) * I_inc_LCT0;                    // dI_inc_LCT0/dt
             dydt[idx + 4] = (5/T_report) * I_inc_LCT0 - (5/T_report) * I_inc_LCT1;              // dI_inc_LCT1/dt
             dydt[idx + 5] = (5/T_report) * I_inc_LCT1 - (5/T_report) * I_inc_LCT2;              // dI_inc_LCT2/dt
             dydt[idx + 6] = (5/T_report) * I_inc_LCT2 - (5/T_report) * I_inc_LCT3;              // dI_inc_LCT3/dt
@@ -145,7 +146,7 @@ std::vector<std::vector<double>> interpolate_results(const std::vector<std::vect
 std::vector<std::vector<double>> solve(double t_start, double t_end,
                                         double atol, double rtol,
                                         std::vector<double> S0, std::vector<double> I0, std::vector<double> R0,
-                                        std::vector<double> beta, std::vector<double> gamma, std::vector<double> phi_report, double T_report,
+                                        std::vector<double> beta, std::vector<double> gamma, double rho_report, double T_report,
                                         const std::vector<double>& delta_beta_temporal, 
                                         int modifier_length, double sigma
                                         ) {
@@ -183,7 +184,7 @@ std::vector<std::vector<double>> solve(double t_start, double t_end,
         results.push_back(row);
     };
     
-    SIR sir_system(beta, gamma, phi_report, T_report,  beta_modifiers);
+    SIR sir_system(beta, gamma, rho_report, T_report,  beta_modifiers);
     runge_kutta_dopri5<std::vector<double>> stepper;
     integrate_adaptive(make_controlled(atol, rtol, stepper), sir_system, y, t_start, t_end, dt, observer);
     return interpolate_results(results, t_start, t_end);
@@ -195,7 +196,7 @@ PYBIND11_MODULE(sir_model, m) {
           py::arg("t_start"), py::arg("t_end"),                                                         // solve between t_start and t_end
           py::arg("atol"), py::arg("rtol"),                                                             // solver accuracy        
           py::arg("S0"), py::arg("I0"), py::arg("R0"),                                                  // initial condition
-          py::arg("beta"), py::arg("gamma"), py::arg("phi_report"), py::arg("T_report"),                // SIR parameters
+          py::arg("beta"), py::arg("gamma"), py::arg("rho_report"), py::arg("T_report"),                // SIR parameters
           py::arg("delta_beta_temporal"), py::arg("modifier_length"), py::arg("sigma")                  // modifier parameters
           );
 }
