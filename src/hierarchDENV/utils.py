@@ -299,7 +299,7 @@ def get_priors(strains, hyperparameters):
     model_name = f'SIR-{strains}S'
     # Define parameters, bounds and labels
     pars = ['rho_report', 'f_R', 'f_I', 'beta', 'delta_beta_temporal']                              # parameters to calibrate
-    bounds = [(0,1), (0,1), (1e-9,1e-2), (0.20,0.60), (-0.50,0.50)]                                 # parameter bounds
+    bounds = [(0,1), (0,1), (1e-9,1e-2), (0,1), (-0.50,0.50)]                                 # parameter bounds
     labels = [r'$\rho_{report}$',  r'$f_{R}$', r'$f_{I}$', r'$\beta$', r'$\Delta \beta_{t}$']       # labels in output figures
     
     # UNINFORMED: >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
