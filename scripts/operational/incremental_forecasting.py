@@ -82,8 +82,8 @@ if __name__ == '__main__':
         ## dates
         season_start_year = int(season[0:4])                                                        # start year of season
         start_simulation = datetime(season_start_year, season_start_month, 1)                       # start of the simulation
-        start_calibration = datetime(season_start_year, 10, 31)                                      # date at which incremental calibrations start
-        end_calibration = datetime(season_start_year, 11, 1)                                        # date at which incremental calibrations stop
+        start_calibration = datetime(season_start_year, 10, 1)                                      # date at which incremental calibrations start
+        end_calibration = datetime(season_start_year+1, 9, 1)                                        # date at which incremental calibrations stop
         end_validation = datetime(season_start_year+1, 9, 30)                                       # enddate of validation data used on plots
 
 
@@ -180,8 +180,8 @@ if __name__ == '__main__':
                                                         settings_dict=settings, discard=discard, thin=thin,
                                                 )                                                                               
             # Save median parameter values across chains and iterations in a .csv
-            df = samples_to_csv(samples_xr.median(dim=['chain', 'iteration']))
-            df.to_csv(samples_path+f'{identifier}_parameters.csv')
+            #df = samples_to_csv(samples_xr.median(dim=['chain', 'iteration']))
+            #df.to_csv(samples_path+f'{identifier}_parameters.csv')
 
             #######################
             ## Visualize results ##
