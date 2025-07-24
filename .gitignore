@@ -171,4 +171,5 @@ dmypy.json
 # Data
 data/raw/DENV_datasus
 data/raw/sprint_2025/climate.csv
+data/raw/sprint_2025/dengue.csv
 data/raw/DENV_datasus/composite_dataset
