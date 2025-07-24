@@ -199,8 +199,6 @@ if __name__ == '__main__':
                     hyperpars_0.to_csv('../../data/interim/calibration/hyperparameters.csv')
                     # .. visualise hyperdistributions
                     hyperdistributions(samples, samples_path+str(identifier)+'_HYPERDIST_'+run_date+'.pdf', lpp.par_shapes, lpp.hyperpar_shapes, par_hyperdistributions, par_bounds, 100)
-                    # ..generate traceplots
-                    traceplot(samples, lpp.par_shapes, lpp.hyperpar_shapes, samples_path, identifier, run_date)
                     # ..generate goodness-of-fit
                     plot_fit(model, datasets, lpp.simtimes, samples, model.parameter_shapes, samples_path, identifier, run_date,
-                                lpp.coordinates_data_also_in_model, lpp.aggregate_over, lpp.additional_axes_data, lpp.corresponding_model_states)
+                                lpp.coordinates_data_also_in_model, lpp.aggregate_over, lpp.additional_axes_data, lpp.corresponding_model_states, rescaling=30)
