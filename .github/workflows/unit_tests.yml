@@ -1,0 +1,42 @@
+name: Run unit tests
+
+on: [pull_request]
+jobs:
+  deploy:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: ['ubuntu-latest',]
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Set up Python
+      uses: actions/setup-python@v1
+      with:
+        python-version: '3.12'
+
+    - name: Set up conda environment
+      uses: conda-incubator/setup-miniconda@v3
+      with:
+        activate-environment: HIERARCHDENV
+        environment-file: hierarchDENV.yml
+        auto-activate-base: false
+
+    - name: Install Boost Libraries
+      shell: bash -l {0}
+      run: |
+        conda activate HIERARCHDENV
+        sudo apt-get update && sudo apt-get install -y libboost-all-dev
+
+    - name: Install hierarchDENV
+      shell: bash -l {0}
+      run: |
+        conda activate HIERARCHDENV
+        python -m pip install --upgrade pip
+        pip install -e . --force-reinstall
+
+    - name: Run unit test
+      shell: bash -l {0}
+      run: |
+        conda activate HIERARCHDENV
+        pytest src/tests/test_lpp.py
