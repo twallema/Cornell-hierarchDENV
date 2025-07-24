@@ -33,7 +33,7 @@ season_end_month = 9
 
 # define seasons and hyperparameter combo's to loop over
 season_lst = ['2022-2023',]
-hyperparameters_lst = ['validation_1',]
+hyperparameters_lst = ['initial_guess',]
 
 # optimization parameters
 ## frequentist optimization
