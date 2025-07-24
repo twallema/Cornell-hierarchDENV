@@ -797,7 +797,7 @@ def hyperdistributions(samples_xr, path_filename, pars_model_shapes, hyperpars_s
 #####################
 
 def plot_fit(model, datasets, simtimes, samples_xr, parameter_shapes, path, identifier, run_date,
-                coordinates_data_also_in_model, aggregate_over, additional_axes_data, corresponding_model_states):
+                coordinates_data_also_in_model, aggregate_over, additional_axes_data, corresponding_model_states, rescaling):
     """
     Visualises the goodness of fit for every season
     """
@@ -875,20 +875,20 @@ def plot_fit(model, datasets, simtimes, samples_xr, parameter_shapes, path, iden
                     dim_name = additional_axes_data[i][j][0]
                     coord = coord[0]
                     # plot
-                    ax[k].scatter(df.index.get_level_values('date').values, 7*df.loc[slice(None), coord].values, color='black', alpha=1, linestyle='None', facecolors='None', s=60, linewidth=2)
-                    ax[k].fill_between(out['date'], 7*out[corresponding_model_states[i][j]].sel({dim_name: coord}).quantile(dim='draws', q=0.05/2),
-                                7*out[corresponding_model_states[i][j]].sel({dim_name: coord}).quantile(dim='draws', q=1-0.05/2), color='blue', alpha=0.15)
-                    ax[k].fill_between(out['date'], 7*out[corresponding_model_states[i][j]].sel({dim_name: coord}).quantile(dim='draws', q=0.50/2),
-                                7*out[corresponding_model_states[i][j]].sel({dim_name: coord}).quantile(dim='draws', q=1-0.50/2), color='blue', alpha=0.20)
+                    ax[k].scatter(df.index.get_level_values('date').values, rescaling*df.loc[slice(None), coord].values, color='black', alpha=1, linestyle='None', facecolors='None', s=60, linewidth=2)
+                    ax[k].fill_between(out['date'], rescaling*out[corresponding_model_states[i][j]].sel({dim_name: coord}).quantile(dim='draws', q=0.05/2),
+                                rescaling*out[corresponding_model_states[i][j]].sel({dim_name: coord}).quantile(dim='draws', q=1-0.05/2), color='blue', alpha=0.15)
+                    ax[k].fill_between(out['date'], rescaling*out[corresponding_model_states[i][j]].sel({dim_name: coord}).quantile(dim='draws', q=0.50/2),
+                                rescaling*out[corresponding_model_states[i][j]].sel({dim_name: coord}).quantile(dim='draws', q=1-0.50/2), color='blue', alpha=0.20)
                     ax[k].set_title(f'State: {corresponding_model_states[i][j]}; Dim: {dim_name} ({coord})')
                     k += 1
             else:
                 # plot
-                ax[k].scatter(df.index, 7*df.values, color='black', alpha=1, linestyle='None', facecolors='None', s=60, linewidth=2)
-                ax[k].fill_between(out['date'], 7*out[corresponding_model_states[i][j]].quantile(dim='draws', q=0.05/2),
-                            7*out[corresponding_model_states[i][j]].quantile(dim='draws', q=1-0.05/2), color='blue', alpha=0.15)
-                ax[k].fill_between(out['date'], 7*out[corresponding_model_states[i][j]].quantile(dim='draws', q=0.50/2),
-                            7*out[corresponding_model_states[i][j]].quantile(dim='draws', q=1-0.50/2), color='blue', alpha=0.20)
+                ax[k].scatter(df.index, rescaling*df.values, color='black', alpha=1, linestyle='None', facecolors='None', s=60, linewidth=2)
+                ax[k].fill_between(out['date'], rescaling*out[corresponding_model_states[i][j]].quantile(dim='draws', q=0.05/2),
+                            rescaling*out[corresponding_model_states[i][j]].quantile(dim='draws', q=1-0.05/2), color='blue', alpha=0.15)
+                ax[k].fill_between(out['date'], rescaling*out[corresponding_model_states[i][j]].quantile(dim='draws', q=0.50/2),
+                            rescaling*out[corresponding_model_states[i][j]].quantile(dim='draws', q=1-0.50/2), color='blue', alpha=0.20)
                 ax[k].set_title(f'State: {corresponding_model_states[i][j]}')
                 k += 1
             
