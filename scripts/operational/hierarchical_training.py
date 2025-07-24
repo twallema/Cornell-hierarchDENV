@@ -23,21 +23,21 @@ from hierarchDENV.utils import initialise_model, make_data_pySODM_compatible, st
 
 # calibration settings
 ## datasets
-identifier = 'validation_1'                                                                                     # identifiers of the training
-seasons = ['2021-2022', '2020-2021', '2019-2020', '2018-2019', '2017-2018', '2016-2017', '2015-2016']           # season to include in training                                                                                                       
+identifier = 'validation_1'                                                                                                                                             # identifiers of the training
+seasons = ['2021-2022', '2020-2021', '2019-2020', '2018-2019', '2017-2018', '2016-2017', '2015-2016', '2014-2015', '2013-2014', '2012-2013', '2011-2012', '2010-2011']  # season to include in training                                                                                                       
 # season length
 season_start_month = 9
 season_end_month = 9
 run_date = datetime.today().strftime("%Y-%m-%d")
 ## define number of chains
-max_n = 200
+max_n = 10000
 pert = 0.05
 processes = int(os.environ.get('NUM_CORES', mp.cpu_count()))
 ## printing and postprocessing
-print_n = 100
+print_n = 5000
 backend = None
-discard = 50
-thin = 1
+discard = 9000
+thin = 50
 
 
 #####################

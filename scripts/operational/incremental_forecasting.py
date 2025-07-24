@@ -27,12 +27,13 @@ from hierarchDENV.utils import initialise_model, plot_fit, make_data_pySODM_comp
 ## Settings ##
 ##############
 
-# define seasons and hyperparameter combo's to loop over
-season_lst = ['2023-2024',]
-hyperparameters_lst = [None,]
+# season length
+season_start_month = 9
+season_end_month = 9
 
-# model settings/ save settings
-quantiles = False           # save quantiles vs. individual trajectories 
+# define seasons and hyperparameter combo's to loop over
+season_lst = ['2022-2023',]
+hyperparameters_lst = ['validation_1',]
 
 # optimization parameters
 ## frequentist optimization
@@ -79,24 +80,25 @@ if __name__ == '__main__':
 
         # optimization parameters
         ## dates
-        season_start = int(season[0:4])                                 # start year of season
-        start_simulation = datetime(season_start, 9, 1)                # date forward simulation is started
-        start_calibration = datetime(season_start+1, 9, 30)               # incremental calibration will start from here
-        end_calibration = datetime(season_start+1, 9, 30)               # and incrementally (weekly) calibrate until this date
-        end_validation = datetime(season_start+1, 9, 30)                # enddate of validation data used on plots
+        season_start_year = int(season[0:4])                                                        # start year of season
+        start_simulation = datetime(season_start_year, season_start_month, 1)                       # start of the simulation
+        start_calibration = datetime(season_start_year, 10, 31)                                      # date at which incremental calibrations start
+        end_calibration = datetime(season_start_year, 11, 1)                                        # date at which incremental calibrations stop
+        end_validation = datetime(season_start_year+1, 9, 30)                                       # enddate of validation data used on plots
+
 
         ##########################################
         ## Prepare pySODM llp dataset arguments ##
         ##########################################
 
         # set up priors
-        pars, bounds, labels, log_prior_prob_fcn, log_prior_prob_fcn_args = get_priors(strains, hyperparameters)
+        pars, bounds, labels, log_prior_prob_fcn, log_prior_prob_fcn_args = get_priors(strains, uf, hyperparameters)
 
         # retrieve guestimate NM
-        theta = list(pd.read_csv('../../data/interim/calibration/single-season-optimal-parameters.csv', index_col=[0,1,2]).loc[(model_name, uf, slice(None))].mean(axis=1))
+        theta = list(pd.read_csv('../../data/interim/calibration/initial_guesses.csv', index_col=[0,1,2]).loc[(model_name, uf, slice(None)), season])
 
         # format data
-        data, states, log_likelihood_fnc, log_likelihood_fnc_args = make_data_pySODM_compatible(uf, serotypes, start_simulation, end_calibration)
+        data, states, log_likelihood_fnc, log_likelihood_fnc_args = make_data_pySODM_compatible(uf, serotypes, start_simulation, max(end_validation,end_calibration))
 
         #################
         ## Setup model ##
