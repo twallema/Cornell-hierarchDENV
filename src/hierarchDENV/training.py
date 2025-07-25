@@ -90,8 +90,8 @@ class log_posterior_probability():
         
     # Hyper priors for global parameters
     @staticmethod
-    def norm_hyper_logpdf(theta, idxs, loc, scale):
-        return np.sum(norm.logpdf(theta[idxs], loc=loc, scale=scale))
+    def norm_hyper_logpdf(theta, mu_idxs, sigma_idxs, mu):
+        return np.sum(norm.logpdf(theta[mu_idxs], loc=mu * np.ones(len(theta[mu_idxs])), scale=theta[sigma_idxs]))
 
     @staticmethod
     def expon_hyper_logpdf(theta, idxs, scale):
@@ -144,10 +144,10 @@ class log_posterior_probability():
             else:
                 raise ValueError(f"'{pars_model_hyperdistribution}' is not a valid hyperdistribution.")
 
-        # Hyperdistribution prior: R0 ~ N(2.5, 0.5)
+        # Hyperdistribution prior: R0 ~ N(2.5, 0.5) --> beta_mu ~ N(0.5, beta_sigma**2), beta_sigma**2 ~ Exponential(0.1)
         beta_mu_idxs = self.hyper_par_name_to_idx['beta_mu']
         beta_sigma_idxs = self.hyper_par_name_to_idx['beta_sigma']
-        hyper_prior_lpp_fs.append((self.norm_hyper_logpdf, (beta_mu_idxs, 0.5, 0.1)))
+        hyper_prior_lpp_fs.append((self.norm_hyper_logpdf, (beta_mu_idxs, beta_sigma_idxs, 0.5)))
         hyper_prior_lpp_fs.append((self.expon_hyper_logpdf, (beta_sigma_idxs, 0.1)))
 
         # Hyperdistribution prior: |delta_beta_temporal_mu| ~ Exponential(1)
@@ -159,15 +159,15 @@ class log_posterior_probability():
         if 'f_R_a' in self.hyper_par_name_to_idx.keys():
             f_R_a_idxs = self.hyper_par_name_to_idx['f_R_a']
             f_R_b_idxs = self.hyper_par_name_to_idx['f_R_b']
-            hyper_prior_lpp_fs.append((self.inv_expon_hyper_logpdf, (f_R_a_idxs, 0.01)))
-            hyper_prior_lpp_fs.append((self.inv_expon_hyper_logpdf, (f_R_b_idxs, 0.01)))   
+            hyper_prior_lpp_fs.append((self.inv_expon_hyper_logpdf, (f_R_a_idxs, 0.1)))
+            hyper_prior_lpp_fs.append((self.inv_expon_hyper_logpdf, (f_R_b_idxs, 0.1)))   
 
         # Hyperdistribution prior: 1/rho_report_a ~ Exponential(1) & 1/rho_report_b ~ Exponential(1) --> higher a and b shrink uncertainty
         if 'rho_report_a' in self.hyper_par_name_to_idx.keys():
             rho_report_a_idxs = self.hyper_par_name_to_idx['rho_report_a']
             rho_report_b_idxs = self.hyper_par_name_to_idx['rho_report_b']
-            hyper_prior_lpp_fs.append((self.inv_expon_hyper_logpdf, (rho_report_a_idxs, 0.01)))
-            hyper_prior_lpp_fs.append((self.inv_expon_hyper_logpdf, (rho_report_b_idxs, 0.01)))
+            hyper_prior_lpp_fs.append((self.inv_expon_hyper_logpdf, (rho_report_a_idxs, 0.1)))
+            hyper_prior_lpp_fs.append((self.inv_expon_hyper_logpdf, (rho_report_b_idxs, 0.1)))
 
         return season_prior_lpp_fs, hyper_prior_lpp_fs
 
