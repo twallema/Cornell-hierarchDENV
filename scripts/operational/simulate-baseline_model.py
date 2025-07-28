@@ -12,16 +12,18 @@ import matplotlib.ticker as ticker
 from scipy.stats import nbinom
 from scipy.optimize import minimize
 
-# exclude years
-exclude_years = ['2022-2023']
+# define start- and enddate
+end_year = 2022
+end_epiweek = 25
 
 # desired quantiles
 quantiles = [0.01, 0.025, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 0.975, 0.99]
 
-# helper functions
-def neg_log_likelihood(params):
+# log likelihood
+def negbinom_log_likelihood(params):
+    # unpack parameters
     r, p = params
-    # Keep parameters in valid range
+    # keep them in valid range
     if r <= 0 or p <= 0 or p >= 1:
         return np.inf
     return -np.sum(nbinom.logpmf(x, r, p))
@@ -33,12 +35,12 @@ data = pd.read_csv('../../data/raw/sprint_2025/dengue.csv', dtype={'epiweek': st
 data = data[['epiweek', 'uf', 'casos']].groupby(by=['epiweek', 'uf']).sum().reset_index()
 
 # split epiweek year and month
-data['epiweek_year'] = data['epiweek'].apply(lambda x: x[:-2])
-data['epiweek_week'] = data['epiweek'].apply(lambda x: x[-2:])
+data['epiweek_year'] = data['epiweek'].apply(lambda x: int(x[:-2]))
+data['epiweek_week'] = data['epiweek'].apply(lambda x: int(x[-2:]))
 data = data[['epiweek_year', 'epiweek_week', 'uf', 'casos']]
 
-# exclude years if needed
-data = data[~data['epiweek_year'].isin(exclude_years)]
+# filter out until end_year + end_epiweek
+data = data[(~(data['epiweek_year'] > end_year) & (  ~((data['epiweek_year'] == end_year) & (data['epiweek_week'] > end_epiweek)) ))]
 
 # compute unique epiweek/ufs
 epiweek_weeks = data['epiweek_week'].unique().tolist()
@@ -58,7 +60,7 @@ for uf in ufs:
         p0 = max(min(p0, 0.99), 0.01)  # keep p0 in valid range
         r0 = max(r0, 0.1)
         # fit distribution
-        res = minimize(neg_log_likelihood, x0=[r0, p0], bounds=[(1e-3, None), (1e-3, 1-1e-3)])
+        res = minimize(negbinom_log_likelihood, x0=[r0, p0], bounds=[(1e-3, None), (1e-3, 1-1e-3)])
         r_hat, p_hat = res.x
         # simulate desired quantiles
         q_values = nbinom.ppf(quantiles, r_hat, p_hat)
