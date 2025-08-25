@@ -30,14 +30,14 @@ season_start_month = 9
 season_end_month = 9
 run_date = datetime.today().strftime("%Y-%m-%d")
 ## define number of chains
-max_n = 10000
+max_n = 100000
 pert = 0.05
 processes = int(os.environ.get('NUM_CORES', mp.cpu_count()))
 ## printing and postprocessing
-print_n = 5000
+print_n = 1
 backend = None
-discard = 9000
-thin = 50
+discard = 100000
+thin = 1000
 
 
 #####################
