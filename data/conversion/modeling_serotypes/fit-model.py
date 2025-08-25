@@ -22,9 +22,9 @@ def str_to_bool(value):
 parser = argparse.ArgumentParser()
 parser.add_argument("-chains", type=int, help="Number of parallel chains.", default=4)
 parser.add_argument("-ID", type=str, help="Sampler output name.")
-parser.add_argument("-p", type=int, help="Order of AR(p) process.")
-parser.add_argument("-distance_matrix", type=str_to_bool, help="Use distance matrix versus adjacency matrix.")
-parser.add_argument("-CAR_per_lag", type=str_to_bool, help="Use one spatial innovation process per AR lag versus one spatial innovation overall.")
+parser.add_argument("-p", type=int, help="Order of AR(p) process.", default=1)
+parser.add_argument("-distance_matrix", type=str_to_bool, help="Use distance matrix versus adjacency matrix.", default=False)
+parser.add_argument("-CAR_per_lag", type=str_to_bool, help="Use one spatial innovation process per AR lag versus one spatial innovation overall.", default=False)
 args = parser.parse_args()
 
 # assign to desired variables
@@ -46,7 +46,6 @@ if not os.path.exists(output_folder):
 
 # Distance matrix
 # ~~~~~~~~~~~~~~~
-distance_matrix = True
 
 if distance_matrix == False:
     # Load adjacency matrix
@@ -196,16 +195,12 @@ if CAR_per_lag:
     with pm.Model() as model:
 
         # --- Typing Effort Model ---
-
         # N^*_{s,t} ~ Binomial(N_{total,s,t}, \delta_{s,t}),
-        # \delta_{s,t} ~ Logit-Normal\mu_{s,t}, \sigma) OR 𝛿_{s,t} ~ Beta(\mu_{s,t}.\phi, (1 − \mu_{s,t}).\phi)
-        # logit(\mu_{s,t}) = \beta + (\beta_{r(s),y} + \epsilon_{s,y}
-        # where N_{total,s,t} the observed total dengue incidence, \delta_{s,t} the fraction that gets subtyped, and,
-        # \beta_{r(s),y} ~ Normal(0, \sigma_{bry})
-        # \epsilon_{s,y} ~ Normal(0, 0.5 * \sigma_{bry}(s))
-        # \sigma_{bry} ~ Halfnormal(sigma_{b, shrinkage})
-        # \sigma_{b, shrinkage} ~ Exponential(1)
-        
+        # where N_{total,s,t} the observed total dengue incidence and \delta_{s,t} the fraction that gets subtyped.
+        #
+        # \delta_{s,t} ~ LogitNormal(\mu_{s,t}, \sigma^2_{delta})
+        # mu_{s,t} = \beta + \beta_{s,t}
+
         # \beta (global intercept)
         beta = pm.Normal("beta", mu=-4.5, sigma=1.5)
 
@@ -221,22 +216,24 @@ if CAR_per_lag:
         # Final state-year effect
         beta_st = pm.Deterministic("beta_st", beta_rt[region_year_idx] + eps_st[state_year_idx])
 
-        # \delta_{s,t} ~ Logit-Normal(\mu_{s,t}, \sigma)
+        # Alternative: model serotyped fraction as a logit-normal since beta is close to zero
+        logit_delta_obs = np.log(delta_obs / (1 - delta_obs)) 
+        logit_mu = beta  + beta_st
         # logit_delta_sigma is important because it controls the overall noise levels on the serotyped cases (lower = less noise)
         # it also controls an important trade-off in this model: the relationship between N_total and N_typed is not perfectly linear, i.e. you can't fit both N_total and delta_st perfectly
         # Values of 0.001-0.002 sacrifices delta_st for a better fit to N_total, while a value of 0.001 gives a good fit to delta_st but a poorer fit to N_typed an too much uncertainty
         logit_delta_sigma = pm.HalfNormal("logit_delta_sigma", sigma=0.002) 
-        logit_delta = pm.Normal("logit_delta", mu=beta + beta_st, sigma=logit_delta_sigma, observed=np.log(delta_obs / (1 - delta_obs)))
+        logit_delta = pm.Normal("logit_delta", mu=logit_mu, sigma=logit_delta_sigma, observed=logit_delta_obs)
         delta_st = pm.Deterministic("delta_st", pm.math.sigmoid(logit_delta))
 
         # N^*_{s,t} ~ Binomial(N_{total,s,t}, \delta_{s,t})
         N_typed_latent = pm.Binomial("N_typed_latent", n=N_total, p=delta_st, observed=N_typed)
 
         # --- Subtype Composition Model ---
-        # p_{i,s,t} ~ Dirichlet(\theta_{i,s,t})
-        # log \theta_{i,s,t} =  \sum_{k=1}^p (1/k)*(\alpha_{i,s,t-k} + \kappa_{i,s,t-k}) + \epsilon_{i,s,t}
-        # \kappa_{i,s,t-k} ~ Normal(0, \sigma^2 * f_{corr} * chol(Q))   # spatially correlated noise
-        # \epsilon_{i,s,t} ~ Normal(0, \sigma^2 * (1-f_{corr}))         # spatially uncorrelated noise
+        # p_{i,s,t} ~ Softmax(\theta_{i,s,t})
+        # log \theta_{i,s,t} =  \sum_{k=1}^p (1/k)*(\alpha_{i,s,t-k} + \kappa_{i,s,t-k}) + \kappa_{i,s,t}       # AR(p) process
+        # \kappa_{i,s,t-k} ~ Normal(0, \sigma^2 * f_{corr} * chol(Q))                                           # spatially correlated noise
+        # \epsilon_{i,s,t} ~ Normal(0, \sigma^2 * (1-f_{corr}))                                                 # spatially uncorrelated noise
 
         # Try to combine an AR(p) with a CAR prior on every timestep in the past
         ## Regularisation of the overall noise & split between spatially structured and unstructured noise
@@ -340,13 +337,8 @@ if CAR_per_lag:
         # Step 3: slice lag zero (p=0) over full time axis
         theta_log_final = theta_log_final[:, 0, :, :]  # shape (n_months, n_serotypes, n_states)
         # Step 4: convert to flat format
-        theta_log_final_flat = theta_log_final.reshape((len(df), n_serotypes))
+        theta_log = theta_log_final.reshape((len(df), n_serotypes))
 
-        # Construct log θ_{i,s,t}
-        theta_log = (
-            theta_log_final_flat
-        )  # Result: shape (n_obs, 4)
-        
         # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     
         # Dirichlet prior for subtype fractions
@@ -366,12 +358,11 @@ else:
     with pm.Model() as model:
 
         # --- Typing Effort Model ---
-        # (original plan)
         # N^*_{s,t} ~ Binomial(N_{total,s,t}, \delta_{s,t}),
         # where N_{total,s,t} the observed total dengue incidence and \delta_{s,t} the fraction that gets subtyped.
         #
-        # 𝛿_{s,t} ~ 𝐵𝑒𝑡𝑎(𝜇_{s,t}.𝜙, (1 − 𝜇_{s,t}).𝜙)
-        # logit(𝜇_{s,t}) = \beta + \beta_s + \beta_t + \sum_j \beta_j X_{s,j}
+        # \delta_{s,t} ~ LogitNormal(\mu_{s,t}, \sigma^2_{delta})
+        # mu_{s,t} = \beta + \beta_{s,t}
 
         # \beta (global intercept)
         beta = pm.Normal("beta", mu=-4.5, sigma=1.5)
@@ -388,20 +379,12 @@ else:
         # Final state-year effect
         beta_st = pm.Deterministic("beta_st", beta_rt[region_year_idx] + eps_st[state_year_idx])
 
-        # # 𝛿_{s,t} ~ 𝐵𝑒𝑡𝑎(𝜇_{s,t}.𝜙, (1 − 𝜇_{s,t}).𝜙)
-        # # logit(𝜇_{s,t})
-        # mu = pm.Deterministic("mu", pm.math.sigmoid(beta + beta_st))
-        # phi = pm.HalfNormal("phi", sigma=5.0)
-        # alpha_beta = mu * phi
-        # beta_beta = (1 - mu) * phi
-        # delta_st = pm.Beta("delta_st", alpha=alpha_beta, beta=beta_beta, observed=delta_obs)
         # Alternative: model serotyped fraction as a logit-normal since beta is close to zero
         logit_delta_obs = np.log(delta_obs / (1 - delta_obs)) 
         logit_mu = beta  + beta_st
         # logit_delta_sigma is important because it controls the overall noise levels on the serotyped cases (lower = less noise)
         # it also controls an important trade-off in this model: the relationship between N_total and N_typed is not perfectly linear, i.e. you can't fit both N_total and delta_st perfectly
         # Values of 0.001-0.002 sacrifices delta_st for a better fit to N_total, while a value of 0.001 gives a good fit to delta_st but a poorer fit to N_typed an too much uncertainty
-        # Opposed
         logit_delta_sigma = pm.HalfNormal("logit_delta_sigma", sigma=0.002) 
         logit_delta = pm.Normal("logit_delta", mu=logit_mu, sigma=logit_delta_sigma, observed=logit_delta_obs)
         delta_st = pm.Deterministic("delta_st", pm.math.sigmoid(logit_delta))
@@ -410,8 +393,10 @@ else:
         N_typed_latent = pm.Binomial("N_typed_latent", n=N_total, p=delta_st, observed=N_typed)
 
         # --- Subtype Composition Model ---
-        # p_{i,s,t} ~ Dirichlet(\theta_{i,s,t})
-        # log 𝜃_{i,s,t} = 𝛼 + 𝛼_s + 𝛼_t + 𝛼_i + 𝛼_{i,t} + 𝛼_{s,i}    
+        # p_{i,s,t} ~ Softmax(\theta_{i,s,t})
+        # \theta_{i,s,t} = \sum_{k=1}^p \rho_k \alpha_{i,s,t-k} +  \kappa_{i,s,t}^{corr} + \kappa_{i,s,t}^{uncorr}          # AR(p) process
+        # \kappa_{i,s,t}^{corr} ~ Normal(0, f_{corr} * \sigma^2  * chol(Q))                                                 # spatially correlated noise
+        # \kappa{i,s,t}^{uncorr} ~ Normal(0, (1-f_{corr}) * \sigma^2)                                                       # spatially uncorrelated noise
 
         ## Regularisation of the overall noise & split between spatially structured and unstructured noise
         total_sigma_shrinkage = pm.HalfNormal("total_sigma_shrinkage", sigma=0.001)
@@ -420,7 +405,7 @@ else:
         uncorr_sigma = pm.Deterministic("uncorr_sigma", proportion_uncorr * total_sigma)
         corr_sigma = pm.Deterministic("corr_sigma", (1 - proportion_uncorr) * total_sigma)
 
-        ## Temporal correlation structure: Decaying weights rho_k = 1/(k**gamma_i) --> identifiable but I think this is too strict
+        ## Temporal correlation structure: Harmonically decaying weights summing to one (guarantees non-stationarity).
         gamma = pt.ones(n_serotypes)
         first_lag = pm.Deterministic("first_lag", critical_rho1(p,gamma))
         rho = pm.Deterministic("rho", first_lag[:,None] / ((np.arange(1, p + 1)[None,:])**gamma[:,None]))
@@ -507,16 +492,12 @@ else:
         # Step 3: slice lag zero (p=0) over full time axis
         theta_log_final = theta_log_final[:, 0, :, :]  # shape (n_months, n_serotypes, n_states)
         # Step 4: convert to flat format
-        theta_log_final_flat = theta_log_final.reshape((len(df), n_serotypes))
+        theta_log= theta_log_final.reshape((len(df), n_serotypes))
 
-        # Construct log θ_{i,s,t}
-        theta_log = (
-            theta_log_final_flat
-        )  # Result: shape (n_obs, 4)
-        
         # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     
-        # Dirichlet prior for subtype fractions
+        # Softmax on subtype fractions
+        # p_{i,s,t} = softmax(\theta_{i,s,t})
         p = pm.Deterministic("p", pm.math.softmax(theta_log, axis=1))
 
         # --- Observed subtyped incidences ---
@@ -530,7 +511,7 @@ else:
 
 # NUTS
 with model:
-    trace = pm.sample(1000, tune=1000, target_accept=0.999, chains=chains, cores=chains, init='adapt_diag', progressbar=True)
+    trace = pm.sample(100, tune=100, target_accept=0.999, chains=chains, cores=chains, init='adapt_diag', progressbar=True)
 
 # Plot posterior predictive checks
 with model:
