@@ -1,5 +1,5 @@
 """
-This script simulates a baseline model
+This script simulates a baseline model for the infodengue-mosqlimate challenge; the model is a negative binomial distribution fit to the weekly dengue incidence from 2010-2025
 """
 
 __author__      = "Tijs Alleman"
@@ -18,7 +18,7 @@ from scipy.optimize import minimize
 ## settings ##
 ##############
 
-validation_idx = 2
+validation_idx = 4
 
 ID = f'validation_{validation_idx}'
 end_train_epiweek = 25
@@ -37,13 +37,13 @@ quantiles = [0.025, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.975]
 #############################################
 
 # log likelihood
-def negbinom_log_likelihood(params):
+def negbinom_log_likelihood(params, x, weights):
     # unpack parameters
     r, p = params
     # keep them in valid range
     if r <= 0 or p <= 0 or p >= 1:
         return np.inf
-    return -np.sum(nbinom.logpmf(x, r, p))
+    return -np.sum(weights * nbinom.logpmf(x, r, p))
 
 # load data
 data = pd.read_csv('../../data/raw/sprint_2025/dengue.csv', dtype={'epiweek': str})
@@ -68,16 +68,24 @@ results= []
 for uf in ufs:
     for epiweek_week in epiweek_weeks:
         # get data
-        x = data[((data['uf'] == uf) & (data['epiweek_week'] == epiweek_week))]['casos']
+        subset = data[((data['uf'] == uf) & (data['epiweek_week'] == epiweek_week))]
+        counts = subset['casos']
+        years = subset['epiweek_year'].values
+        # define weighing scheme
+        lambda_ = 0.1
+        max_year = subset['epiweek_year'].max()
+        weights = np.exp(-lambda_ * (max_year - years))
+        weights = weights / weights.sum()
         # method of moments estimate for r and p
-        mean_x = np.mean(x)
-        var_x = np.var(x, ddof=1)
+        mean_x = np.mean(counts)
+        var_x = np.var(counts, ddof=1)
         p0 = mean_x / var_x
         r0 = mean_x * p0 / (1 - p0)
         p0 = max(min(p0, 0.99), 0.01)  # keep p0 in valid range
         r0 = max(r0, 0.1)
         # fit distribution
-        res = minimize(negbinom_log_likelihood, x0=[r0, p0], bounds=[(1e-3, None), (1e-3, 1-1e-3)])
+        res = minimize(lambda params: negbinom_log_likelihood(params, counts, weights),
+                       x0=[r0, p0], bounds=[(1e-3, None), (1e-3, 1-1e-3)])
         r_hat, p_hat = res.x
         # simulate desired quantiles
         q_values = nbinom.ppf(quantiles, r_hat, p_hat)
@@ -144,6 +152,8 @@ for uf in ufs:
     for epiweek_week in epiweek_weeks:
         # get data
         x = data[((data['uf'] == uf) & (data['epiweek_week'] == epiweek_week))]['casos']
+        if uf == 'RJ':
+            print(data[((data['uf'] == uf) & (data['epiweek_week'] == epiweek_week))])
         # plot data
         ax.scatter(int(epiweek_week) * np.ones(len(x)), x, color='black', alpha=0.2, facecolors='none')
         # get 50% and 95% quantiles
