@@ -63,7 +63,7 @@ for fn,yr in zip(filenames, corresponding_years):
         # load data
         df = pd.read_csv(f'../raw/DENV_datasus/composite_dataset/{fn}', delimiter=';')
         # find right Brazilian UF
-        zip2uf_map = pd.read_csv('../raw/sprint_2025/data/map_regional_health.csv')[['uf', 'geocode']].drop_duplicates().set_index('geocode')['uf'].to_dict()
+        zip2uf_map = pd.read_csv('../raw/sprint_2025/map_regional_health.csv')[['uf', 'geocode']].drop_duplicates().set_index('geocode')['uf'].to_dict()
         df['SG_UF'] = df['MUNIATEND'].map(zip2uf_map)
         # find most likely date
         ## strategy: take minimum of columns containing a date: ['DTCOLETA', 'DTMAC1', 'DTMAC2', 'DTINIHEMA1', 'DTINIHEMA2']

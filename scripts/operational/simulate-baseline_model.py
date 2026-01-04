@@ -72,7 +72,7 @@ for uf in ufs:
         counts = subset['casos']
         years = subset['epiweek_year'].values
         # define weighing scheme
-        lambda_ = 0.1
+        lambda_ = 0.5
         max_year = subset['epiweek_year'].max()
         weights = np.exp(-lambda_ * (max_year - years))
         weights = weights / weights.sum()
@@ -81,11 +81,11 @@ for uf in ufs:
         var_x = np.var(counts, ddof=1)
         p0 = mean_x / var_x
         r0 = mean_x * p0 / (1 - p0)
-        p0 = max(min(p0, 0.99), 0.01)  # keep p0 in valid range
-        r0 = max(r0, 0.1)
+        p0 = max(min(p0, 0.999), 0.001)  # keep p0 in valid range
+        r0 = max(r0, 10)
         # fit distribution
         res = minimize(lambda params: negbinom_log_likelihood(params, counts, weights),
-                       x0=[r0, p0], bounds=[(1e-3, None), (1e-3, 1-1e-3)])
+                       x0=[r0, p0], bounds=[(1e-9, None), (1e-9, 1-1e-9)])
         r_hat, p_hat = res.x
         # simulate desired quantiles
         q_values = nbinom.ppf(quantiles, r_hat, p_hat)
